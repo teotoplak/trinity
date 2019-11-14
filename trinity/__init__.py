@@ -1,6 +1,12 @@
 import pkg_resources
 import sys
 
+import warnings
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
+    import trio
+
 # TODO: update this to use the `trinity` version once extracted from py-evm
 __version__: str
 try:
