@@ -7,6 +7,7 @@ By default connects as a ROPSTEN peer using the ETH protocol.
 import argparse
 import asyncio
 import logging
+from eth.db.atomic import AtomicDB
 import signal
 from typing import (
     cast,
@@ -14,11 +15,18 @@ from typing import (
     Union,
 )
 
+from p2p.constants import DEVP2P_V4
+from trinity._utils.version import construct_trinity_client_identifier
+from trinity.constants import (
+    MAINNET_NETWORK_ID,
+    ROPSTEN_NETWORK_ID
+)
+
 from eth_typing import BlockNumber
-from eth.chains.mainnet import MainnetChain, MAINNET_GENESIS_HEADER, MAINNET_VM_CONFIGURATION
-from eth.chains.ropsten import RopstenChain, ROPSTEN_GENESIS_HEADER, ROPSTEN_VM_CONFIGURATION
+from eth.chains.mainnet import MAINNET_GENESIS_HEADER, MAINNET_VM_CONFIGURATION
+from eth.chains.ropsten import ROPSTEN_GENESIS_HEADER, ROPSTEN_VM_CONFIGURATION
 from eth.db.backends.memory import MemoryDB
-from eth.tools.logging import DEBUG2_LEVEL_NUM
+from eth_utils import DEBUG2_LEVEL_NUM
 
 from p2p import ecies
 from p2p.kademlia import Node
@@ -51,15 +59,15 @@ def _main() -> None:
         pool_class = ETHPeerPool
 
     if args.mainnet:
-        network_id = MainnetChain.network_id
+        network_id = MAINNET_NETWORK_ID
         vm_config = MAINNET_VM_CONFIGURATION
         genesis = MAINNET_GENESIS_HEADER
     else:
-        network_id = RopstenChain.network_id
+        network_id = ROPSTEN_NETWORK_ID
         vm_config = ROPSTEN_VM_CONFIGURATION
         genesis = ROPSTEN_GENESIS_HEADER
 
-    headerdb = AsyncHeaderDB(MemoryDB())
+    headerdb = AsyncHeaderDB(AtomicDB())
     headerdb.persist_header(genesis)
     loop = asyncio.get_event_loop()
     nodes = [Node.from_uri(args.enode)]
@@ -68,6 +76,9 @@ def _main() -> None:
         headerdb=headerdb,
         network_id=network_id,
         vm_configuration=vm_config,
+        p2p_version=DEVP2P_V4,
+        listen_port=30303,
+        client_version_string=construct_trinity_client_identifier(),
     )
     peer_pool = pool_class(
         privkey=ecies.generate_privkey(),
@@ -109,7 +120,7 @@ def _main() -> None:
         loop.stop()
 
     asyncio.ensure_future(exit_on_sigint())
-    asyncio.ensure_future(request_stuff())
+    # asyncio.ensure_future(request_stuff())
     loop.set_debug(True)
     loop.run_forever()
     loop.close()

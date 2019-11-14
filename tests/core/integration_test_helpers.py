@@ -24,6 +24,7 @@ from eth.tools.builder.chain import (
 )
 
 from trinity.constants import TO_NETWORKING_BROADCAST_CONFIG
+from trinity.protocol.common.peer import BaseChainPeerPool
 
 from trinity.protocol.common.peer_pool_event_bus import (
     DefaultPeerPoolEventServer,
@@ -52,9 +53,10 @@ def run_mock_request_response(request_type, response, bus):
     asyncio.ensure_future(mock_request_response(request_type, response, bus))
 
 
-async def connect_to_peers_loop(peer_pool, nodes):
+async def connect_to_peers_loop(peer_pool: BaseChainPeerPool, nodes):
     """Loop forever trying to connect to one of the given nodes if the pool is not yet full."""
     while peer_pool.is_operational:
+        peer_pool.logger.debug(f"Connected peers = {len(peer_pool.connected_nodes)}")
         try:
             if not peer_pool.is_full:
                 await peer_pool.connect_to_nodes(nodes)

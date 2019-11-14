@@ -50,7 +50,6 @@ from trinity.components.builtin.tx_pool.component import (
     TxComponent,
 )
 
-
 BASE_COMPONENTS: Tuple[Type[BaseComponent], ...] = (
     AttachComponent,
     DbShellComponent,
