@@ -65,6 +65,7 @@ deps = {
         "pytest-randomly==3.0.0",
         # only for eth2
         "ruamel.yaml==0.15.98",
+        "eth-tester==0.2.0b3",
     ],
     # We have to keep some separation between trio and asyncio based tests
     # because `pytest-asyncio` is greedy and tries to run all asyncio fixtures.
@@ -172,7 +173,7 @@ with open('./README.md') as readme:
 setup(
     name='trinity',
     # *IMPORTANT*: Don't manually change the version here. Use the 'bumpversion' utility.
-    version='0.1.0-alpha.29',
+    version='0.1.0-alpha.30',
     description='The Trinity client for the Ethereum network',
     long_description=long_description,
     long_description_content_type='text/markdown',
