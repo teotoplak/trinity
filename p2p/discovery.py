@@ -282,6 +282,48 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
     def _send_find_node(self, node: NodeAPI, target_node_id: int) -> None:
         self.send_find_node_v4(node, target_node_id)
 
+    async def aurora_bootstrap(self):
+        # pick a random node for table as a starting point of a walk
+        try:
+            starting_node: NodeAPI = next(self.routing.get_random_nodes(1))
+        except StopIteration:
+            # if there is no nodes in the routing table do nothing
+            return
+
+        # todo get this from CLI
+        network_size = 10000
+        distance = self.calculate_distance(network_size, constants.KADEMLIA_BUCKET_SIZE)
+        await self.aurora_walk(starting_node, network_size, distance)
+
+    # naive DAG emergence
+    async def aurora_walk(self, starting_node: NodeAPI, network_size: int, distance: int):
+        self.logger.info("aurora starting...")
+        # todo we cannot consider bootstrap nodes as a bonded ones
+        collected_nodes_set: Set[NodeAPI] = set(self.bootstrap_nodes)
+        current_node: NodeAPI = starting_node
+        for iteration in range(distance):
+            self.cancel_token.raise_if_triggered()
+            self._send_find_node(current_node, self.random_kademlia_node_id())
+            candidates = await self.wait_neighbours(current_node)
+            current_node = self.aurora_pick(set(candidates), collected_nodes_set)
+            collected_nodes_set.update(candidates)
+            if network_size == len(collected_nodes_set):
+                break
+        # todo return chain head
+
+    @staticmethod
+    def calculate_distance(network_size: int, find_node_response_size: int):
+        # todo implement this
+        return 1
+
+    @staticmethod
+    def aurora_pick(candidates: Set[NodeAPI], exclusion_candidates: Set[NodeAPI]) -> NodeAPI:
+        if len(candidates) == 0 and len(exclusion_candidates) == 0:
+            raise ValueError("No candidates to pick")
+        not_excluded_candidates = candidates - exclusion_candidates
+        set_to_choose_from = exclusion_candidates if len(not_excluded_candidates) == 0 else not_excluded_candidates
+        return random.sample(set_to_choose_from, 1)[0]
+
     async def lookup(self, node_id: int) -> Tuple[NodeAPI, ...]:
         """Lookup performs a network search for nodes close to the given target.
 
@@ -341,7 +383,11 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         return tuple(closest)
 
     async def lookup_random(self) -> Tuple[NodeAPI, ...]:
-        return await self.lookup(random.randint(0, constants.KADEMLIA_MAX_NODE_ID))
+        return await self.lookup(self.random_kademlia_node_id())
+
+    @staticmethod
+    def random_kademlia_node_id() -> int:
+        return random.randint(0, constants.KADEMLIA_MAX_NODE_ID)
 
     def get_random_bootnode(self) -> Iterator[NodeAPI]:
         if self.bootstrap_nodes:
@@ -379,7 +425,7 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         # and arguments can only be redefined contravariantly
         self.transport = cast(asyncio.DatagramTransport, transport)
 
-    async def bootstrap(self) -> None:
+    async def bootstrap(self, aurora: bool = False) -> None:
         for node in self.bootstrap_nodes:
             uri = node.uri()
             pubkey, _, uri_tail = uri.partition('@')
@@ -399,7 +445,10 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             if not any(bonded):
                 self.logger.info("Failed to bond with bootstrap nodes %s", self.bootstrap_nodes)
                 return
-            await self.lookup_random()
+            if aurora:
+                await self.aurora_bootstrap()
+            else:
+                await self.lookup_random()
         except OperationCancelled as e:
             self.logger.info("Bootstrapping cancelled: %s", e)
 

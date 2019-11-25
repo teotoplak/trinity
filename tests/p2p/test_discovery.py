@@ -16,6 +16,7 @@ from cancel_token import CancelToken
 
 from p2p import constants
 from p2p import discovery
+from p2p.discovery import DiscoveryProtocol
 from p2p.tools.factories import (
     AddressFactory,
     DiscoveryProtocolFactory,
@@ -110,6 +111,41 @@ async def test_protocol_bootstrap():
     assert sorted([(node, cmd) for (node, cmd, _) in proto.messages]) == sorted([
         (node1, 'find_node'),
         (node2, 'find_node')])
+
+
+@pytest.mark.asyncio
+async def test_aurora_walk_find_node_calls():
+    network_size = 1000
+    batch_size = 3
+    distance = 2
+    batch = NodeFactory.create_batch(batch_size)
+    proto = MockDiscoveryProtocol(batch)
+    for node in batch:
+        proto.routing.add_node(node)
+
+    await proto.aurora_walk(batch[0], network_size, distance)
+
+    assert len(proto.messages) == distance
+
+
+@pytest.mark.asyncio
+async def test_aurora_pick_existing_candidates():
+    candidates = NodeFactory.create_batch(4)
+    node1, node2, *other_nodes = candidates
+    exclusion_candidates = {node1, node2}
+    result = DiscoveryProtocol.aurora_pick(set(candidates), exclusion_candidates)
+
+    assert result in candidates
+    assert result not in exclusion_candidates
+
+
+@pytest.mark.asyncio
+async def test_aurora_pick_non_existing_candidates():
+    candidates = set(NodeFactory.create_batch(2))
+    exclusion_candidates = candidates
+    result = DiscoveryProtocol.aurora_pick(candidates, exclusion_candidates)
+
+    assert result in exclusion_candidates
 
 
 @pytest.mark.asyncio
