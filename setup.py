@@ -49,6 +49,8 @@ deps = {
         "multiaddr>=0.0.8,<0.1.0",
         "pymultihash>=0.8.2",
         "libp2p==0.1.1",
+        "numpy",
+        "scipy"
     ],
     'test': [
         "async-timeout>=3.0.1,<4",

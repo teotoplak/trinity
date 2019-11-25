@@ -62,6 +62,7 @@ from cancel_token import CancelToken, OperationCancelled
 
 from p2p import constants
 from p2p.abc import AddressAPI, NodeAPI
+from p2p.aurora.distance import calculate_distance
 from p2p.events import (
     PeerCandidatesRequest,
     RandomBootnodeRequest,
@@ -291,8 +292,9 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             return
 
         # todo get this from CLI
-        network_size = 10000
-        distance = self.calculate_distance(network_size, constants.KADEMLIA_BUCKET_SIZE)
+        network_size = 100
+        malicious_nodes_number_approx = 30
+        distance = calculate_distance(network_size, malicious_nodes_number_approx, constants.KADEMLIA_BUCKET_SIZE)
         await self.aurora_walk(starting_node, network_size, distance)
 
     # naive DAG emergence
@@ -310,11 +312,6 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             if network_size == len(collected_nodes_set):
                 break
         # todo return chain head
-
-    @staticmethod
-    def calculate_distance(network_size: int, find_node_response_size: int):
-        # todo implement this
-        return 1
 
     @staticmethod
     def aurora_pick(candidates: Set[NodeAPI], exclusion_candidates: Set[NodeAPI]) -> NodeAPI:
