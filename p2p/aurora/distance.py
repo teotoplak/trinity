@@ -2,12 +2,12 @@ import scipy.stats as st
 import numpy
 
 
-def _draw_amount_expectation_matrix_markov(transition_matrix):
+def _distance_expectation_matrix_markov(transition_matrix):
     transition_matrix = transition_matrix[:-1, :-1]
     return numpy.linalg.inv(numpy.identity(len(transition_matrix)) - transition_matrix)
 
 
-def _draw_amount_transition_matrix_markov(network_size, malicious_nodes_number, neighbours_response_size):
+def _distance_transition_matrix_markov(network_size, malicious_nodes_number, neighbours_response_size):
     s = (malicious_nodes_number + 1, malicious_nodes_number + 1)
     result_matrix = numpy.zeros(s)
     for row in range(malicious_nodes_number + 1):
@@ -22,7 +22,8 @@ def _draw_amount_transition_matrix_markov(network_size, malicious_nodes_number, 
 
 
 def calculate_distance(network_size, malicious_nodes_number, neighbours_response_size):
-    transition_matrix = _draw_amount_transition_matrix_markov(network_size, malicious_nodes_number, neighbours_response_size)
-    network_size = _draw_amount_expectation_matrix_markov(transition_matrix)
+    """Calculates minimum suggested walk length over the network for aurora algorithm"""
+    transition_matrix = _distance_transition_matrix_markov(network_size, malicious_nodes_number, neighbours_response_size)
+    network_size = _distance_expectation_matrix_markov(transition_matrix)
     return sum(network_size[0, :])
 

@@ -1,7 +1,7 @@
 import pytest
 from pytest import approx
-from p2p.aurora.distance import calculate_distance, _draw_amount_expectation_matrix_markov, \
-    _draw_amount_transition_matrix_markov
+from p2p.aurora.distance import calculate_distance, _distance_expectation_matrix_markov, \
+    _distance_transition_matrix_markov
 
 
 absolute_tolerance = 10e-2
@@ -36,8 +36,8 @@ def test_draw_amount_expectation_matrix_markov():
     expected = [[1.111, 0.95238, 2.26190],
                 [0, 1.42857, 2.14286],
                 [0, 0, 2.5]]
-    transition_matrix = _draw_amount_transition_matrix_markov(5, 3, 2)
-    result_matrix = _draw_amount_expectation_matrix_markov(transition_matrix)
+    transition_matrix = _distance_transition_matrix_markov(5, 3, 2)
+    result_matrix = _distance_expectation_matrix_markov(transition_matrix)
     assert_matrices_equal(expected, result_matrix)
 
 
@@ -46,7 +46,7 @@ def test_draw_amount_transition_matrix_markov():
                 [0.00000,   0.30000,   0.60000,   0.10000],
                 [0.00000,   0.00000,   0.60000,   0.40000],
                 [0.00000,   0.00000,   0.00000,   1.00000]]
-    result = _draw_amount_transition_matrix_markov(5, 3, 2)
+    result = _distance_transition_matrix_markov(5, 3, 2)
     assert_matrices_equal(expected, result)
 
 
