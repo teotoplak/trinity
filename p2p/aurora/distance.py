@@ -21,7 +21,7 @@ def _distance_transition_matrix_markov(network_size, malicious_nodes_number, nei
     return result_matrix
 
 
-def calculate_distance(network_size, malicious_nodes_number, neighbours_response_size):
+def calculate_distance(network_size, malicious_nodes_number, neighbours_response_size) -> float:
     """Calculates minimum suggested walk length over the network for aurora algorithm"""
     transition_matrix = _distance_transition_matrix_markov(network_size, malicious_nodes_number, neighbours_response_size)
     network_size = _distance_expectation_matrix_markov(transition_matrix)

@@ -295,23 +295,24 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         network_size = 100
         malicious_nodes_number_approx = 30
         distance = calculate_distance(network_size, malicious_nodes_number_approx, constants.KADEMLIA_BUCKET_SIZE)
-        await self.aurora_walk(starting_node, network_size, distance)
+        await self.aurora_walk(starting_node, network_size, int(distance))
 
     # naive DAG emergence
-    async def aurora_walk(self, starting_node: NodeAPI, network_size: int, distance: int):
+    async def aurora_walk(self, entry_node: NodeAPI, network_size: int, distance: int):
         self.logger.info("aurora starting...")
         # todo we cannot consider bootstrap nodes as a bonded ones
-        collected_nodes_set: Set[NodeAPI] = set(self.bootstrap_nodes)
-        current_node: NodeAPI = starting_node
+        collected_nodes_set: Set[NodeAPI] = set()
+        current_node_in_walk: NodeAPI = entry_node
         for iteration in range(distance):
             self.cancel_token.raise_if_triggered()
-            self._send_find_node(current_node, self.random_kademlia_node_id())
-            candidates = await self.wait_neighbours(current_node)
-            current_node = self.aurora_pick(set(candidates), collected_nodes_set)
+            self._send_find_node(current_node_in_walk, self.random_kademlia_node_id())
+            candidates = await self.wait_neighbours(current_node_in_walk)
+            current_node_in_walk = self.aurora_pick(set(candidates), collected_nodes_set)
             collected_nodes_set.update(candidates)
             if network_size == len(collected_nodes_set):
                 break
-        # todo return chain head
+        # todo return chain head instead of key
+        return current_node_in_walk.pubkey
 
     @staticmethod
     def aurora_pick(candidates: Set[NodeAPI], exclusion_candidates: Set[NodeAPI]) -> NodeAPI:
