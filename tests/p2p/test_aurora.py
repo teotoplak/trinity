@@ -2,7 +2,7 @@ import pytest
 from pytest import approx
 from p2p.aurora.distance import calculate_distance, _distance_expectation_matrix_markov, \
     _distance_transition_matrix_markov
-
+from p2p.aurora.probabilistic import optimum
 
 absolute_tolerance = 10e-2
 
@@ -48,5 +48,27 @@ def test_draw_amount_transition_matrix_markov():
                 [0.00000,   0.00000,   0.00000,   1.00000]]
     result = _distance_transition_matrix_markov(5, 3, 2)
     assert_matrices_equal(expected, result)
+
+
+@pytest.mark.parametrize("map, expected", [
+    ({
+        'a': [0.6, 0.51, 0.55],
+        'b': [0.91]
+    }, ('b', 0.753)),
+    ({
+        'a': [0.6, 0.51, 0.55],
+        'b': [0.4]
+    }, ('a', 0.508)),
+    ({
+        'a': [0.9, 0.9, 0.9],
+        'b': [0.91]
+    }, ('a', 2.187)),
+
+])
+def test_optimum(map, expected):
+    result_key, result_value = optimum(map)
+    expected_key, expected_value = expected
+    assert result_key == expected_key
+    assert result_value == approx(expected_value, abs=absolute_tolerance)
 
 
