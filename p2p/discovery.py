@@ -63,7 +63,7 @@ from cancel_token import CancelToken, OperationCancelled
 from p2p import constants
 from p2p.abc import AddressAPI, NodeAPI
 from p2p.aurora.distance import calculate_distance, assumed_malicious_node_number
-from p2p.aurora.probabilistic import quantified_mistake
+from p2p.aurora.probabilistic import quantified_mistake, optimum
 from p2p.events import (
     PeerCandidatesRequest,
     RandomBootnodeRequest,
@@ -319,7 +319,7 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
     async def aurora_walk(self, entry_node: NodeAPI,
                           network_size: int,
                           neighbours_response_size: int,
-                          standard_mistakes_treshold: int):
+                          standard_mistakes_threshold: int) -> Tuple[float, any, Set[NodeAPI]]:
 
         malicious_nodes_number_approx = assumed_malicious_node_number(network_size)
         # todo should this be float?
@@ -329,7 +329,6 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         collected_nodes_set: Set[NodeAPI] = set()
         iteration = 0
         accumulated_mistake = 0
-        correctness_indicator = 0
         current_node_in_walk: NodeAPI = entry_node
 
         while iteration < distance:
@@ -345,8 +344,8 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
                                          malicious_nodes_number_approx,
                                          last_neighbours_response_size,
                                          num_of_already_known_peers)
-            accumulated_mistake = min(accumulated_mistake + mistake, standard_mistakes_treshold)
-            if accumulated_mistake == standard_mistakes_treshold:
+            accumulated_mistake = min(accumulated_mistake + mistake, standard_mistakes_threshold)
+            if accumulated_mistake == standard_mistakes_threshold:
                 break
 
             # todo put this to separate method
@@ -357,9 +356,43 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             if network_size == len(collected_nodes_set):
                 break
             iteration += 1
+        correctness_indicator = 1 - (accumulated_mistake / standard_mistakes_threshold)
         # todo return chain head instead of key later on
-        return current_node_in_walk.pubkey
+        return correctness_indicator, current_node_in_walk.pubkey, collected_nodes_set
 
+    def aurora_tally(self,
+                     entry_node: NodeAPI,
+                     standard_mistakes_threshold: int,
+                     network_size: int,
+                     neighbours_response_size: int,
+                     num_of_walks: int):
+        correctness_dict: Dict[any, List[float]] = {}
+        correctness_indicator, pubkey, collected_nodes_set = self.aurora_walk(
+            entry_node,
+            network_size,
+            neighbours_response_size,
+            standard_mistakes_threshold)
+        if correctness_indicator == 0:
+            # stuck in clique
+            return None
+        correctness_dict = self.aurora_put(correctness_dict, pubkey, correctness_indicator)
+        # starting from 1 since we already made one walk
+        for _ in range(1, num_of_walks):
+            current_node = self.aurora_pick(collected_nodes_set, set())
+            correctness_indicator, pubkey, collected_nodes_set = self.aurora_walk(
+                current_node,
+                network_size,
+                neighbours_response_size,
+                standard_mistakes_threshold)
+            correctness_indicator = self.aurora_put(correctness_dict, pubkey, correctness_indicator)
+        return optimum(correctness_indicator)
+
+    def aurora_put(self, correctness_dict: Dict[any, List[float]], key, value):
+        if key in correctness_dict:
+            correctness_dict[key].append(value)
+        else:
+            correctness_dict[key] = [value]
+        return correctness_dict
 
     @staticmethod
     def aurora_pick(candidates: Set[NodeAPI], exclusion_candidates: Set[NodeAPI]) -> NodeAPI:
