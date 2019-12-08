@@ -1,5 +1,6 @@
 import scipy.stats as st
 import numpy
+import math
 
 
 def _distance_expectation_matrix_markov(transition_matrix):
@@ -27,3 +28,6 @@ def calculate_distance(network_size, malicious_nodes_number, neighbours_response
     network_size = _distance_expectation_matrix_markov(transition_matrix)
     return sum(network_size[0, :])
 
+
+def assumed_malicious_node_number(network_size: int) -> int:
+    return math.ceil(network_size / 2) - 1

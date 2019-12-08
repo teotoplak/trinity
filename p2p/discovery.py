@@ -62,7 +62,8 @@ from cancel_token import CancelToken, OperationCancelled
 
 from p2p import constants
 from p2p.abc import AddressAPI, NodeAPI
-from p2p.aurora.distance import calculate_distance
+from p2p.aurora.distance import calculate_distance, assumed_malicious_node_number
+from p2p.aurora.probabilistic import quantified_mistake
 from p2p.events import (
     PeerCandidatesRequest,
     RandomBootnodeRequest,
@@ -313,6 +314,52 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
                 break
         # todo return chain head instead of key
         return current_node_in_walk.pubkey
+
+    # naive DAG emergence
+    async def aurora_walk(self, entry_node: NodeAPI,
+                          network_size: int,
+                          neighbours_response_size: int,
+                          standard_mistakes_treshold: int):
+
+        malicious_nodes_number_approx = assumed_malicious_node_number(network_size)
+        # todo should this be float?
+        distance = calculate_distance(network_size,
+                                      malicious_nodes_number_approx,
+                                      neighbours_response_size)
+        collected_nodes_set: Set[NodeAPI] = set()
+        iteration = 0
+        accumulated_mistake = 0
+        correctness_indicator = 0
+        current_node_in_walk: NodeAPI = entry_node
+
+        while iteration < distance:
+
+            self.cancel_token.raise_if_triggered()
+            self._send_find_node(current_node_in_walk, self.random_kademlia_node_id())
+            candidates = await self.wait_neighbours(current_node_in_walk)
+
+            last_neighbours_response_size = len(candidates)
+            # todo what about known ones but not available? this should consider it
+            num_of_already_known_peers = len(collected_nodes_set & set(candidates))
+            mistake = quantified_mistake(network_size,
+                                         malicious_nodes_number_approx,
+                                         last_neighbours_response_size,
+                                         num_of_already_known_peers)
+            accumulated_mistake = min(accumulated_mistake + mistake, standard_mistakes_treshold)
+            if accumulated_mistake == standard_mistakes_treshold:
+                break
+
+            # todo put this to separate method
+            distance_diff = (min(mistake, 1) - 0.5) / 0.5
+            distance = distance + distance_diff
+            current_node_in_walk = self.aurora_pick(set(candidates), collected_nodes_set)
+            collected_nodes_set.update(candidates)
+            if network_size == len(collected_nodes_set):
+                break
+            iteration += 1
+        # todo return chain head instead of key later on
+        return current_node_in_walk.pubkey
+
 
     @staticmethod
     def aurora_pick(candidates: Set[NodeAPI], exclusion_candidates: Set[NodeAPI]) -> NodeAPI:
