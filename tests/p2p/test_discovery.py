@@ -115,80 +115,6 @@ async def test_protocol_bootstrap():
 
 
 @pytest.mark.asyncio
-async def test_aurora_naive():
-    """ This test is on top of a fully connected topology mock.
-    It tests if the end result was a hit or a miss
-    """
-    malicious_nodes_number = 5
-    network_size = 25
-
-    protocols_batch = DiscoveryProtocolFactory.create_batch(network_size)
-    # mapping node pubkey to honest or not value
-    pubkey_honesty = {}
-
-    # set up fully connected network
-    for index, target_protocol in enumerate(protocols_batch):
-        pubkey_honesty.update({target_protocol.pubkey: False if index <= malicious_nodes_number else True})
-        for connect_to_protocol in protocols_batch:
-            # todo this maybe doesn't have to exist
-            if target_protocol == connect_to_protocol:
-                continue
-            target_protocol.update_routing_table(connect_to_protocol.this_node)
-
-    our_protocol = protocols_batch[0]
-
-    '''
-    The Problem here is that methods are directly linked for sending, and there is no waiting made on send method
-    Which should happen because recv_neighbours is setting the callback methods
-    '''
-
-    # connect our node's transport to all other directly, not over wire
-    link_transport_to_multiple(our_protocol, protocols_batch[1:])
-
-    distance = calculate_distance(network_size, malicious_nodes_number, constants.KADEMLIA_BUCKET_SIZE)
-    # just pick second node as a entry point of walk
-    entry_node = protocols_batch[1].this_node
-    result_pubkey = await our_protocol.aurora_walk(entry_node, network_size, int(distance))
-
-    assert pubkey_honesty[result_pubkey]
-
-
-@pytest.mark.asyncio
-async def test_aurora_walk_find_node_calls():
-    network_size = 1000
-    batch_size = 3
-    distance = 2
-    batch = NodeFactory.create_batch(batch_size)
-    proto = MockDiscoveryProtocol(batch)
-    for node in batch:
-        proto.routing.add_node(node)
-
-    await proto.aurora_walk(batch[0], network_size, distance)
-
-    assert len(proto.messages) == distance
-
-
-@pytest.mark.asyncio
-async def test_aurora_pick_existing_candidates():
-    candidates = NodeFactory.create_batch(4)
-    node1, node2, *other_nodes = candidates
-    exclusion_candidates = {node1, node2}
-    result = DiscoveryProtocol.aurora_pick(set(candidates), exclusion_candidates)
-
-    assert result in candidates
-    assert result not in exclusion_candidates
-
-
-@pytest.mark.asyncio
-async def test_aurora_pick_non_existing_candidates():
-    candidates = set(NodeFactory.create_batch(2))
-    exclusion_candidates = candidates
-    result = DiscoveryProtocol.aurora_pick(candidates, exclusion_candidates)
-
-    assert result in exclusion_candidates
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize('echo', ['echo', b'echo'])
 async def test_wait_ping(echo):
     proto = MockDiscoveryProtocol([])
@@ -446,39 +372,6 @@ def link_transports(proto1, proto2):
         {"sendto": lambda msg, addr: proto1.datagram_received(msg, addr)},
     )
 
-
-def link_transport_to_multiple(our_protocol, protocols):
-    def _tuple_address_from_protocol(protocol):
-        return protocol.address.ip, protocol.address.udp_port
-
-    for protocol in protocols:
-        protocol.transport = type(
-            "mock-transport",
-            (object,),
-            {"sendto": lambda msg, addr: our_protocol
-                .datagram_received(msg, _tuple_address_from_protocol(protocol))},
-        )
-
-    def _send_to_mock(msg, addr):
-        ip, udp_port = addr
-        # find protocol we want to send to
-        # todo change this to filtering
-        send_to_protocol = None
-        for protocol in protocols:
-            if protocol.address.ip == ip and protocol.address.udp_port == udp_port:
-                send_to_protocol = protocol
-                break
-        # mimic sending over wire
-        # await asyncio.sleep(1)
-        return send_to_protocol.datagram_received(msg, _tuple_address_from_protocol(our_protocol))
-
-    _send_to_mock_coroutine = asyncio.coroutine(_send_to_mock)
-
-    our_protocol.transport = type(
-        "mock-transport",
-        (object,),
-        {"sendto": _send_to_mock},
-    )
 
 class MockHandler:
     called = False

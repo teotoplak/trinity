@@ -295,10 +295,10 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         network_size = 100
         malicious_nodes_number_approx = 30
         distance = calculate_distance(network_size, malicious_nodes_number_approx, constants.KADEMLIA_BUCKET_SIZE)
-        await self.aurora_walk(starting_node, network_size, int(distance))
+        await self.aurora_walk_naive(starting_node, network_size, int(distance))
 
     # naive DAG emergence
-    async def aurora_walk(self, entry_node: NodeAPI, network_size: int, distance: int):
+    async def aurora_walk_naive(self, entry_node: NodeAPI, network_size: int, distance: int):
         self.logger.info("aurora starting...")
         # todo we cannot consider bootstrap nodes as a bonded ones
         collected_nodes_set: Set[NodeAPI] = set()
