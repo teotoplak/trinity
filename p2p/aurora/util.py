@@ -72,3 +72,16 @@ def optimum(m: Dict[any, List[float]]):
             optimal_correctness = current_key_correctness
             optimal_key = key
     return optimal_key, optimal_correctness
+
+
+def optimize_distance_with_mistake(distance: float, mistake: float) -> float:
+    """ Using mistake to optimize the walk during runtime
+
+    Using mistake to shorten or lengthen the walk, but never more then a single hop
+    """
+    distance_diff = (min(mistake, 1) - 0.5) / 0.5
+    return distance + distance_diff
+
+
+def calculate_correctness_indicator(accumulated_mistake, standard_mistakes_threshold):
+    return 1 - (accumulated_mistake / standard_mistakes_threshold)

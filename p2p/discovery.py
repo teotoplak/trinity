@@ -62,7 +62,8 @@ from cancel_token import CancelToken, OperationCancelled
 
 from p2p import constants
 from p2p.abc import AddressAPI, NodeAPI
-from p2p.aurora.util import calculate_distance, assumed_malicious_node_number, quantified_mistake, optimum
+from p2p.aurora.util import calculate_distance, assumed_malicious_node_number, quantified_mistake, optimum, \
+    optimize_distance_with_mistake, calculate_correctness_indicator
 from p2p.events import (
     PeerCandidatesRequest,
     RandomBootnodeRequest,
@@ -347,15 +348,13 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             if accumulated_mistake == standard_mistakes_threshold:
                 break
 
-            # todo put this to separate method
-            distance_diff = (min(mistake, 1) - 0.5) / 0.5
-            distance = distance + distance_diff
+            distance = optimize_distance_with_mistake(distance, mistake)
             current_node_in_walk = self.aurora_pick(set(candidates), collected_nodes_set)
             collected_nodes_set.update(candidates)
             if network_size == len(collected_nodes_set):
                 break
             iteration += 1
-        correctness_indicator = 1 - (accumulated_mistake / standard_mistakes_threshold)
+        correctness_indicator = calculate_correctness_indicator(accumulated_mistake, standard_mistakes_threshold)
         # todo return chain head instead of key later on
         return correctness_indicator, current_node_in_walk.pubkey, collected_nodes_set
 
