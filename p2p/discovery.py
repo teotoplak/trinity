@@ -62,8 +62,7 @@ from cancel_token import CancelToken, OperationCancelled
 
 from p2p import constants
 from p2p.abc import AddressAPI, NodeAPI
-from p2p.aurora.distance import calculate_distance, assumed_malicious_node_number
-from p2p.aurora.probabilistic import quantified_mistake, optimum
+from p2p.aurora.util import calculate_distance, assumed_malicious_node_number, quantified_mistake, optimum
 from p2p.events import (
     PeerCandidatesRequest,
     RandomBootnodeRequest,
@@ -374,6 +373,7 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             standard_mistakes_threshold)
         if correctness_indicator == 0:
             # stuck in clique
+            self.logger.warning("Clique detected during p2p discovery!")
             return None
         correctness_dict = self.aurora_put(correctness_dict, pubkey, correctness_indicator)
         # starting from 1 since we already made one walk

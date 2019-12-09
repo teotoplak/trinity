@@ -18,7 +18,7 @@ from cancel_token import CancelToken
 from p2p import constants
 from p2p import discovery
 from p2p.abc import NodeAPI
-from p2p.aurora.distance import calculate_distance
+from p2p.aurora.util import calculate_distance
 from p2p.discovery import DiscoveryProtocol
 from p2p.tools.factories import (
     AddressFactory,

@@ -1,8 +1,7 @@
 import pytest
 from pytest import approx
-from p2p.aurora.distance import calculate_distance, _distance_expectation_matrix_markov, \
-    _distance_transition_matrix_markov
-from p2p.aurora.probabilistic import optimum
+from p2p.aurora.util import calculate_distance, _distance_expectation_matrix_markov, \
+    _distance_transition_matrix_markov, optimum
 
 absolute_tolerance = 10e-2
 
@@ -14,22 +13,15 @@ def assert_matrices_equal(expected, result):
         assert result[row_index] == approx(expected[row_index], abs=absolute_tolerance)
 
 
-def test_aurora_distance_5():
-    assert calculate_distance(5, 3, 2) == approx(4.325, abs=absolute_tolerance)
-
-
-def test_aurora_distance_52():
-    assert calculate_distance(52, 26, 5) == approx(38.947, abs=absolute_tolerance)
-
-
-def test_aurora_distance_100():
-    assert calculate_distance(100, 30, 10) == approx(38.535, abs=absolute_tolerance)
-
-
-# test disabled since it is computationally demanding and takes longer time
-#
-# def test_aurora_distance_1000():
-#    assert expected_draws(1000, 499, 40) == approx(166.9329, abs=absolute_tolerance)
+@pytest.mark.parametrize("params, expected", [
+    ((5, 3, 2), 4.325),
+    ((52, 26, 5), 38.947),
+    ((100, 30, 10), 38.535)
+    # test disabled since it is computationally demanding and takes longer time
+    # ((1000, 499, 40), 166.9329)
+])
+def test_aurora_distance(params, expected):
+    assert calculate_distance(*params) == approx(expected, abs=absolute_tolerance)
 
 
 def test_draw_amount_expectation_matrix_markov():
@@ -63,7 +55,6 @@ def test_draw_amount_transition_matrix_markov():
         'a': [0.9, 0.9, 0.9],
         'b': [0.91]
     }, ('a', 2.187)),
-
 ])
 def test_optimum(map, expected):
     result_key, result_value = optimum(map)
