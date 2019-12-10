@@ -18,7 +18,7 @@ from cancel_token import CancelToken
 from p2p import constants
 from p2p import discovery
 from p2p.abc import NodeAPI
-from p2p.aurora.util import calculate_distance
+from p2p.aurora.util import calculate_distance, aurora_pick
 from p2p.discovery import DiscoveryProtocol
 from p2p.tools.factories import (
     AddressFactory,
@@ -75,7 +75,7 @@ async def test_aurora_end_to_end():
 async def test_aurora_walk():
     network_size = 50
     malicious_node_number = 10
-    num_of_algorithm_test_runs = 10
+    num_of_algorithm_test_runs = 50
 
     batch = NodeFactory.create_batch(network_size)
     proto = MockDiscoveryProtocolAurora(batch)
@@ -102,7 +102,7 @@ async def test_aurora_pick_existing_candidates():
     candidates = NodeFactory.create_batch(4)
     node1, node2, *other_nodes = candidates
     exclusion_candidates = {node1, node2}
-    result = DiscoveryProtocol.aurora_pick(set(candidates), exclusion_candidates)
+    result = aurora_pick(set(candidates), exclusion_candidates)
 
     assert result in candidates
     assert result not in exclusion_candidates
@@ -112,7 +112,7 @@ async def test_aurora_pick_existing_candidates():
 async def test_aurora_pick_non_existing_candidates():
     candidates = set(NodeFactory.create_batch(2))
     exclusion_candidates = candidates
-    result = DiscoveryProtocol.aurora_pick(candidates, exclusion_candidates)
+    result = aurora_pick(candidates, exclusion_candidates)
 
     assert result in exclusion_candidates
 

@@ -63,7 +63,7 @@ from cancel_token import CancelToken, OperationCancelled
 from p2p import constants
 from p2p.abc import AddressAPI, NodeAPI
 from p2p.aurora.util import calculate_distance, assumed_malicious_node_number, quantified_mistake, optimum, \
-    optimize_distance_with_mistake, calculate_correctness_indicator
+    optimize_distance_with_mistake, calculate_correctness_indicator, aurora_pick, aurora_put
 from p2p.events import (
     PeerCandidatesRequest,
     RandomBootnodeRequest,
@@ -308,7 +308,7 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             self.cancel_token.raise_if_triggered()
             self._send_find_node(current_node_in_walk, self.random_kademlia_node_id())
             candidates = await self.wait_neighbours(current_node_in_walk)
-            current_node_in_walk = self.aurora_pick(set(candidates), collected_nodes_set)
+            current_node_in_walk = aurora_pick(set(candidates), collected_nodes_set)
             collected_nodes_set.update(candidates)
             if network_size == len(collected_nodes_set):
                 break
@@ -349,7 +349,7 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
                 break
 
             distance = optimize_distance_with_mistake(distance, mistake)
-            current_node_in_walk = self.aurora_pick(set(candidates), collected_nodes_set)
+            current_node_in_walk = aurora_pick(set(candidates), collected_nodes_set)
             collected_nodes_set.update(candidates)
             if network_size == len(collected_nodes_set):
                 break
@@ -374,32 +374,17 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             # stuck in clique
             self.logger.warning("Clique detected during p2p discovery!")
             return None
-        correctness_dict = self.aurora_put(correctness_dict, pubkey, correctness_indicator)
+        correctness_dict = aurora_put(correctness_dict, pubkey, correctness_indicator)
         # starting from 1 since we already made one walk
         for _ in range(1, num_of_walks):
-            current_node = self.aurora_pick(collected_nodes_set, set())
+            current_node = aurora_pick(collected_nodes_set, set())
             correctness_indicator, pubkey, collected_nodes_set = self.aurora_walk(
                 current_node,
                 network_size,
                 neighbours_response_size,
                 standard_mistakes_threshold)
-            correctness_indicator = self.aurora_put(correctness_dict, pubkey, correctness_indicator)
+            correctness_indicator = aurora_put(correctness_dict, pubkey, correctness_indicator)
         return optimum(correctness_indicator)
-
-    def aurora_put(self, correctness_dict: Dict[any, List[float]], key, value):
-        if key in correctness_dict:
-            correctness_dict[key].append(value)
-        else:
-            correctness_dict[key] = [value]
-        return correctness_dict
-
-    @staticmethod
-    def aurora_pick(candidates: Set[NodeAPI], exclusion_candidates: Set[NodeAPI]) -> NodeAPI:
-        if len(candidates) == 0 and len(exclusion_candidates) == 0:
-            raise ValueError("No candidates to pick")
-        not_excluded_candidates = candidates - exclusion_candidates
-        set_to_choose_from = exclusion_candidates if len(not_excluded_candidates) == 0 else not_excluded_candidates
-        return random.sample(set_to_choose_from, 1)[0]
 
     async def lookup(self, node_id: int) -> Tuple[NodeAPI, ...]:
         """Lookup performs a network search for nodes close to the given target.

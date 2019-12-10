@@ -1,10 +1,13 @@
-from typing import Dict, List
+from typing import Dict, List, Set
 
 import scipy.stats as st
 import numpy
 import math
+import random
 
 from scipy import stats as st
+
+from p2p.abc import NodeAPI
 
 
 def _distance_expectation_matrix_markov(transition_matrix):
@@ -28,7 +31,8 @@ def _distance_transition_matrix_markov(network_size, malicious_nodes_number, nei
 
 def calculate_distance(network_size, malicious_nodes_number, neighbours_response_size) -> float:
     """Calculates minimum suggested walk length over the network for Aurora algorithm"""
-    transition_matrix = _distance_transition_matrix_markov(network_size, malicious_nodes_number, neighbours_response_size)
+    transition_matrix = _distance_transition_matrix_markov(network_size, malicious_nodes_number,
+                                                           neighbours_response_size)
     network_size = _distance_expectation_matrix_markov(transition_matrix)
     return sum(network_size[0, :])
 
@@ -85,3 +89,19 @@ def optimize_distance_with_mistake(distance: float, mistake: float) -> float:
 
 def calculate_correctness_indicator(accumulated_mistake, standard_mistakes_threshold):
     return 1 - (accumulated_mistake / standard_mistakes_threshold)
+
+
+def aurora_put(correctness_dict: Dict[any, List[float]], key, value):
+    if key in correctness_dict:
+        correctness_dict[key].append(value)
+    else:
+        correctness_dict[key] = [value]
+    return correctness_dict
+
+
+def aurora_pick(candidates: Set[NodeAPI], exclusion_candidates: Set[NodeAPI]) -> NodeAPI:
+    if len(candidates) == 0 and len(exclusion_candidates) == 0:
+        raise ValueError("No candidates to pick")
+    not_excluded_candidates = candidates - exclusion_candidates
+    set_to_choose_from = exclusion_candidates if len(not_excluded_candidates) == 0 else not_excluded_candidates
+    return random.sample(set_to_choose_from, 1)[0]
