@@ -322,7 +322,6 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
                           standard_mistakes_threshold: int) -> Tuple[float, any, Set[NodeAPI]]:
 
         malicious_nodes_number_approx = assumed_malicious_node_number(network_size)
-        # todo should this be float?
         distance = calculate_distance(network_size,
                                       malicious_nodes_number_approx,
                                       neighbours_response_size)
@@ -338,14 +337,14 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             candidates = await self.wait_neighbours(current_node_in_walk)
 
             last_neighbours_response_size = len(candidates)
-            # todo what about known ones but not available? this should consider it
+            # todo what about the known ones but not available? this should consider it
             num_of_already_known_peers = len(collected_nodes_set & set(candidates))
             mistake = quantified_mistake(network_size,
                                          malicious_nodes_number_approx,
                                          last_neighbours_response_size,
                                          num_of_already_known_peers)
-            accumulated_mistake = min(accumulated_mistake + mistake, standard_mistakes_threshold)
-            if accumulated_mistake == standard_mistakes_threshold:
+            accumulated_mistake += mistake
+            if accumulated_mistake >= standard_mistakes_threshold:
                 break
 
             distance = optimize_distance_with_mistake(distance, mistake)

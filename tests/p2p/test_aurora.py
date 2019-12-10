@@ -16,7 +16,9 @@ def assert_matrices_equal(expected, result):
 @pytest.mark.parametrize("params, expected", [
     ((5, 3, 2), 4.325),
     ((52, 26, 5), 38.947),
-    ((100, 30, 10), 38.535)
+    ((100, 30, 10), 38.535),
+    # testing response_size being bigger then network_size
+    ((5, 3, 10), 1),
     # test disabled since it is computationally demanding and takes longer time
     # ((1000, 499, 40), 166.9329)
 ])
@@ -65,7 +67,9 @@ def test_optimum(map, expected):
 
 @pytest.mark.parametrize("total_size, success_states_in_population, sample_size, observed_successes, expected", [
     (21, 5, 3, 3, 6.823529),
-    (10, 5, 3, 3, 1)
+    (10, 5, 3, 3, 1),
+    (100, 49, 16, 0, 0),
+    (100, 1, 5, 0, 0),
 ])
 def test_quantified_mistake(total_size, success_states_in_population, sample_size, observed_successes, expected):
     assert quantified_mistake(total_size,

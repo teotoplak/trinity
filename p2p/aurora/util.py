@@ -31,7 +31,10 @@ def _distance_transition_matrix_markov(network_size, malicious_nodes_number, nei
 
 def calculate_distance(network_size, malicious_nodes_number, neighbours_response_size) -> float:
     """Calculates minimum suggested walk length over the network for Aurora algorithm"""
-    transition_matrix = _distance_transition_matrix_markov(network_size, malicious_nodes_number,
+    if neighbours_response_size > network_size:
+        neighbours_response_size = network_size
+    transition_matrix = _distance_transition_matrix_markov(network_size,
+                                                           malicious_nodes_number,
                                                            neighbours_response_size)
     network_size = _distance_expectation_matrix_markov(transition_matrix)
     return sum(network_size[0, :])
@@ -51,8 +54,8 @@ def quantified_mistake(total_size, success_states_in_population, sample_size, ob
     rounded_median = int(round(median))
 
     cumulative_prob_good_pick = hypergeom.cdf(rounded_median)
-    cumulative_prob_bad_pick = hypergeom.cdf(sample_size) - cumulative_prob_good_pick
-    cumulative_prob_seen = hypergeom.cdf(observed_successes) - cumulative_prob_good_pick
+    cumulative_prob_bad_pick = sum([hypergeom.pmf(p) for p in range(rounded_median + 1, sample_size + 1)])
+    cumulative_prob_seen = sum([hypergeom.pmf(p) for p in range(rounded_median + 1, observed_successes + 1)])
     ratio_of_likelihood_between_good_bad_choice = \
         0 if cumulative_prob_bad_pick == 0 else cumulative_prob_good_pick / cumulative_prob_bad_pick
     dampening_factor = 0 if cumulative_prob_bad_pick == 0 else cumulative_prob_seen / cumulative_prob_bad_pick
@@ -88,6 +91,11 @@ def optimize_distance_with_mistake(distance: float, mistake: float) -> float:
 
 
 def calculate_correctness_indicator(accumulated_mistake, standard_mistakes_threshold):
+    """Calculate correctness indicator for the walk
+
+    If indicator is closer to zero it is more plausible that that the walk is traversing
+    non-malicious nodes, reverse for 1
+    """
     return 1 - (accumulated_mistake / standard_mistakes_threshold)
 
 
