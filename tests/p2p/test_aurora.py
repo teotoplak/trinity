@@ -1,7 +1,7 @@
 import pytest
 from pytest import approx
 from p2p.aurora.util import calculate_distance, _distance_expectation_matrix_markov, \
-    _distance_transition_matrix_markov, optimum
+    _distance_transition_matrix_markov, optimum, quantified_mistake
 
 absolute_tolerance = 10e-2
 
@@ -63,3 +63,13 @@ def test_optimum(map, expected):
     assert result_value == approx(expected_value, abs=absolute_tolerance)
 
 
+@pytest.mark.parametrize("total_size, success_states_in_population, sample_size, observed_successes, expected", [
+    (21, 5, 3, 3, 6.823529),
+    (10, 5, 3, 3, 1)
+])
+def test_quantified_mistake(total_size, success_states_in_population, sample_size, observed_successes, expected):
+    assert quantified_mistake(total_size,
+                              success_states_in_population,
+                              sample_size,
+                              observed_successes) \
+           == approx(expected, abs=absolute_tolerance)
