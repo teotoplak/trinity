@@ -82,7 +82,7 @@ async def test_aurora_end_to_end():
 ])
 @pytest.mark.asyncio
 async def test_aurora_walk(network_size, malpn, malpg, mistake_threshold, test_runs):
-    """ TODO this is non-deterministic test, should be changed"""
+    """ TODO this is a non-deterministic test, should be changed"""
     response_size = constants.KADEMLIA_BUCKET_SIZE
     batch = NodeFactory.create_batch(network_size)
     pubkey_honesty: Dict[any, Tuple[NodeAPI, bool]] = {}
