@@ -373,7 +373,9 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             # stuck in clique
             self.logger.warning("Clique detected during p2p discovery!")
             return None
-        correctness_dict = aurora_put(correctness_dict, pubkey, correctness_indicator)
+        correctness_dict = aurora_put(correctness_dict,
+                                      pubkey,
+                                      correctness_indicator)
         # starting from 1 since we already made one walk
         for _ in range(1, num_of_walks):
             current_node = aurora_pick(collected_nodes_set, set())
@@ -382,8 +384,10 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
                 network_size,
                 neighbours_response_size,
                 standard_mistakes_threshold)
-            correctness_indicator = aurora_put(correctness_dict, pubkey, correctness_indicator)
-        return optimum(correctness_indicator)
+            correctness_dict = aurora_put(correctness_dict,
+                                          pubkey,
+                                          correctness_indicator)
+        return optimum(correctness_dict)
 
     async def lookup(self, node_id: int) -> Tuple[NodeAPI, ...]:
         """Lookup performs a network search for nodes close to the given target.
