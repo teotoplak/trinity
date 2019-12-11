@@ -67,6 +67,7 @@ from p2p.ecies import generate_privkey
 
 from .cancel_token import CancelTokenFactory
 from .kademlia import AddressFactory
+from ...aurora.aurora_dicovery_protocol import AuroraDiscoveryProtocol
 
 
 class DiscoveryProtocolFactory(factory.Factory):
@@ -81,6 +82,16 @@ class DiscoveryProtocolFactory(factory.Factory):
 
     @classmethod
     def from_seed(cls, seed: bytes, *args: Any, **kwargs: Any) -> DiscoveryProtocol:
+        privkey = keys.PrivateKey(keccak(seed))
+        return cls(*args, privkey=privkey, **kwargs)
+
+
+class AuroraDiscoveryProtocolFactory(DiscoveryProtocolFactory):
+    class Meta:
+        model = AuroraDiscoveryProtocol
+
+    @classmethod
+    def from_seed(cls, seed: bytes, *args: Any, **kwargs: Any) -> AuroraDiscoveryProtocol:
         privkey = keys.PrivateKey(keccak(seed))
         return cls(*args, privkey=privkey, **kwargs)
 

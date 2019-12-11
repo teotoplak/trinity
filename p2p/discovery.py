@@ -62,8 +62,6 @@ from cancel_token import CancelToken, OperationCancelled
 
 from p2p import constants
 from p2p.abc import AddressAPI, NodeAPI
-from p2p.aurora.util import calculate_distance, assumed_malicious_node_number, quantified_mistake, optimum, \
-    optimize_distance_with_mistake, calculate_correctness_indicator, aurora_pick, aurora_put
 from p2p.events import (
     PeerCandidatesRequest,
     RandomBootnodeRequest,
@@ -284,111 +282,6 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
     def _send_find_node(self, node: NodeAPI, target_node_id: int) -> None:
         self.send_find_node_v4(node, target_node_id)
 
-    async def aurora_bootstrap(self):
-        # pick a random node for table as a starting point of a walk
-        try:
-            starting_node: NodeAPI = next(self.routing.get_random_nodes(1))
-        except StopIteration:
-            # if there is no nodes in the routing table do nothing
-            return
-
-        # todo get this from CLI
-        network_size = 100
-        malicious_nodes_number_approx = 30
-        distance = calculate_distance(network_size, malicious_nodes_number_approx, constants.KADEMLIA_BUCKET_SIZE)
-        await self.aurora_walk_naive(starting_node, network_size, int(distance))
-
-    # naive DAG emergence
-    async def aurora_walk_naive(self, entry_node: NodeAPI, network_size: int, distance: int):
-        self.logger.info("aurora starting...")
-        # todo we cannot consider bootstrap nodes as a bonded ones
-        collected_nodes_set: Set[NodeAPI] = set()
-        current_node_in_walk: NodeAPI = entry_node
-        for iteration in range(distance):
-            self.cancel_token.raise_if_triggered()
-            self._send_find_node(current_node_in_walk, self.random_kademlia_node_id())
-            candidates = await self.wait_neighbours(current_node_in_walk)
-            current_node_in_walk = aurora_pick(set(candidates), collected_nodes_set)
-            collected_nodes_set.update(candidates)
-            if network_size == len(collected_nodes_set):
-                break
-        # todo return chain head instead of key
-        return current_node_in_walk.pubkey
-
-    # naive DAG emergence
-    async def aurora_walk(self, entry_node: NodeAPI,
-                          network_size: int,
-                          neighbours_response_size: int,
-                          standard_mistakes_threshold: int) -> Tuple[float, any, Set[NodeAPI]]:
-
-        malicious_nodes_number_approx = assumed_malicious_node_number(network_size)
-        distance = calculate_distance(network_size,
-                                      malicious_nodes_number_approx,
-                                      neighbours_response_size)
-        collected_nodes_set: Set[NodeAPI] = set()
-        iteration = 0
-        accumulated_mistake = 0
-        current_node_in_walk: NodeAPI = entry_node
-
-        while iteration < distance:
-
-            self.cancel_token.raise_if_triggered()
-            self._send_find_node(current_node_in_walk, self.random_kademlia_node_id())
-            candidates = await self.wait_neighbours(current_node_in_walk)
-
-            last_neighbours_response_size = len(candidates)
-            # todo what about the known ones but not available? this should consider it
-            num_of_already_known_peers = len(collected_nodes_set & set(candidates))
-            mistake = quantified_mistake(network_size,
-                                         malicious_nodes_number_approx,
-                                         last_neighbours_response_size,
-                                         num_of_already_known_peers)
-            accumulated_mistake += mistake
-            if accumulated_mistake >= standard_mistakes_threshold:
-                break
-
-            distance = optimize_distance_with_mistake(distance, mistake)
-            current_node_in_walk = aurora_pick(set(candidates), collected_nodes_set)
-            collected_nodes_set.update(candidates)
-            if network_size == len(collected_nodes_set):
-                break
-            iteration += 1
-        correctness_indicator = calculate_correctness_indicator(accumulated_mistake, standard_mistakes_threshold)
-        # todo return chain head instead of key later on
-        return correctness_indicator, current_node_in_walk.pubkey, collected_nodes_set
-
-    def aurora_tally(self,
-                     entry_node: NodeAPI,
-                     standard_mistakes_threshold: int,
-                     network_size: int,
-                     neighbours_response_size: int,
-                     num_of_walks: int):
-        correctness_dict: Dict[any, List[float]] = {}
-        correctness_indicator, pubkey, collected_nodes_set = self.aurora_walk(
-            entry_node,
-            network_size,
-            neighbours_response_size,
-            standard_mistakes_threshold)
-        if correctness_indicator == 0:
-            # stuck in clique
-            self.logger.warning("Clique detected during p2p discovery!")
-            return None
-        correctness_dict = aurora_put(correctness_dict,
-                                      pubkey,
-                                      correctness_indicator)
-        # starting from 1 since we already made one walk
-        for _ in range(1, num_of_walks):
-            current_node = aurora_pick(collected_nodes_set, set())
-            correctness_indicator, pubkey, collected_nodes_set = self.aurora_walk(
-                current_node,
-                network_size,
-                neighbours_response_size,
-                standard_mistakes_threshold)
-            correctness_dict = aurora_put(correctness_dict,
-                                          pubkey,
-                                          correctness_indicator)
-        return optimum(correctness_dict)
-
     async def lookup(self, node_id: int) -> Tuple[NodeAPI, ...]:
         """Lookup performs a network search for nodes close to the given target.
 
@@ -448,11 +341,7 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         return tuple(closest)
 
     async def lookup_random(self) -> Tuple[NodeAPI, ...]:
-        return await self.lookup(self.random_kademlia_node_id())
-
-    @staticmethod
-    def random_kademlia_node_id() -> int:
-        return random.randint(0, constants.KADEMLIA_MAX_NODE_ID)
+        return await self.lookup(random.randint(0, constants.KADEMLIA_MAX_NODE_ID))
 
     def get_random_bootnode(self) -> Iterator[NodeAPI]:
         if self.bootstrap_nodes:
@@ -490,7 +379,7 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         # and arguments can only be redefined contravariantly
         self.transport = cast(asyncio.DatagramTransport, transport)
 
-    async def bootstrap(self, aurora: bool = False) -> None:
+    async def bootstrap(self) -> None:
         for node in self.bootstrap_nodes:
             uri = node.uri()
             pubkey, _, uri_tail = uri.partition('@')
@@ -510,10 +399,7 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             if not any(bonded):
                 self.logger.info("Failed to bond with bootstrap nodes %s", self.bootstrap_nodes)
                 return
-            if aurora:
-                await self.aurora_bootstrap()
-            else:
-                await self.lookup_random()
+            await self.lookup_random()
         except OperationCancelled as e:
             self.logger.info("Bootstrapping cancelled: %s", e)
 

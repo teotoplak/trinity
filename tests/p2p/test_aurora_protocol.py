@@ -18,6 +18,7 @@ from cancel_token import CancelToken
 from p2p import constants
 from p2p import discovery
 from p2p.abc import NodeAPI
+from p2p.aurora.aurora_dicovery_protocol import AuroraDiscoveryProtocol
 from p2p.aurora.util import calculate_distance, aurora_pick
 from p2p.discovery import DiscoveryProtocol
 from p2p.tools.factories import (
@@ -26,6 +27,7 @@ from p2p.tools.factories import (
     NodeFactory,
     PrivateKeyFactory,
 )
+from p2p.tools.factories.discovery import AuroraDiscoveryProtocolFactory
 from tests.p2p.test_discovery import MockDiscoveryProtocol
 
 
@@ -80,6 +82,7 @@ async def test_aurora_end_to_end():
 ])
 @pytest.mark.asyncio
 async def test_aurora_walk(network_size, malpn, malpg, mistake_threshold, test_runs):
+    """ TODO this is non-deterministic test, should be changed"""
     response_size = constants.KADEMLIA_BUCKET_SIZE
     batch = NodeFactory.create_batch(network_size)
     pubkey_honesty: Dict[any, Tuple[NodeAPI, bool]] = {}
@@ -108,14 +111,14 @@ async def test_aurora_walk(network_size, malpn, malpg, mistake_threshold, test_r
 
 @pytest.mark.asyncio
 async def test_aurora_tally_clique_detected():
-    proto = DiscoveryProtocolFactory.from_seed(b'foo')
+    proto = AuroraDiscoveryProtocolFactory.from_seed(b'foo')
     proto.aurora_walk = lambda *args: (0, "block", set())
     assert proto.aurora_tally(NodeFactory(), 10, 50, 16, 3) is None
 
 
 @pytest.mark.asyncio
 async def test_aurora_tally():
-    proto = DiscoveryProtocolFactory.from_seed(b'foo')
+    proto = AuroraDiscoveryProtocolFactory.from_seed(b'foo')
     m = Mock()
     m.side_effect = [
         (0.8, "block_a", set(NodeFactory.create_batch(16))),
@@ -182,7 +185,7 @@ def link_transport_to_multiple(our_protocol, protocols):
     )
 
 
-class MockDiscoveryProtocolAurora(discovery.DiscoveryProtocol):
+class MockDiscoveryProtocolAurora(AuroraDiscoveryProtocol):
     def __init__(self, bootnodes, honest_nodes: Set[NodeAPI], malicious_nodes: Set[NodeAPI], malpg):
         privkey = keys.PrivateKey(keccak(b"seed"))
         self.messages = []
