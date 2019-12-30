@@ -1,8 +1,10 @@
 import random
 from typing import Sequence, Set, Tuple, Dict, List
 
+import trio
 from cancel_token import CancelToken
 from eth_keys import datatypes
+from lahja import EndpointAPI
 
 from p2p import constants
 from p2p.abc import AddressAPI, NodeAPI
@@ -11,14 +13,15 @@ from p2p.aurora.util import calculate_distance, aurora_pick, assumed_malicious_n
 from p2p.discovery import DiscoveryService
 
 
-class AuroraDiscoveryProtocol(DiscoveryService):
+class AuroraDiscoveryService(DiscoveryService):
 
     def __init__(self,
                  privkey: datatypes.PrivateKey,
                  address: AddressAPI,
                  bootstrap_nodes: Sequence[NodeAPI],
-                 cancel_token: CancelToken) -> None:
-        super().__init__(privkey, address, bootstrap_nodes, cancel_token)
+                 event_bus: EndpointAPI,
+                 socket: trio.socket.SocketType) -> None:
+        super().__init__(privkey, address, bootstrap_nodes, event_bus, socket)
 
     async def aurora_walk(self, entry_node: NodeAPI,
                           network_size: int,

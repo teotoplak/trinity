@@ -7,6 +7,7 @@ from eth_hash.auto import keccak
 
 from eth_keys import keys
 
+from p2p.aurora.aurora_dicovery_protocol import AuroraDiscoveryService
 from p2p.discovery import DiscoveryService
 from p2p.kademlia import Address
 
@@ -59,7 +60,7 @@ async def manually_driven_discovery_pair(nursery, socket_pair):
     await discovery2.manager.wait_finished()
 
 
-class ManuallyDrivenDiscoveryService(DiscoveryService):
+class ManuallyDrivenDiscoveryService(AuroraDiscoveryService):
     """A DiscoveryService that can be executed with TrioManager.run_service() but which doesn't
     run any background tasks (e.g. bootstrapping) by itself. Instead one must schedule any tasks
     manually.
