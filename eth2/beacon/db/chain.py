@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-import functools
 from typing import Iterable, Optional, Tuple, Type, cast
 
 from cytoolz import concat, first, sliding_window
@@ -8,24 +7,36 @@ from eth.exceptions import BlockNotFound, CanonicalHeadNotFound, ParentNotFound
 from eth.validation import validate_word
 from eth_typing import Hash32
 from eth_utils import ValidationError, encode_hex, to_tuple
+from lru import LRU
 import ssz
 
 from eth2.beacon.constants import ZERO_SIGNING_ROOT
 from eth2.beacon.db.exceptions import (
     AttestationRootNotFound,
+    EpochInfoNotFound,
     FinalizedHeadNotFound,
     HeadStateSlotNotFound,
     JustifiedHeadNotFound,
-    MissingForkChoiceScoringFns,
+    MissingForkChoiceContext,
+    MissingForkChoiceScorings,
     StateNotFound,
 )
 from eth2.beacon.db.schema import SchemaV1
-from eth2.beacon.fork_choice.scoring import ScoringFn as ForkChoiceScoringFn
+from eth2.beacon.fork_choice.scoring import BaseForkChoiceScoring, BaseScore
 from eth2.beacon.helpers import compute_epoch_at_slot
 from eth2.beacon.types.blocks import BaseBeaconBlock, BeaconBlock  # noqa: F401
+from eth2.beacon.types.nonspec.epoch_info import EpochInfo
 from eth2.beacon.types.states import BeaconState  # noqa: F401
 from eth2.beacon.typing import Epoch, HashTreeRoot, SigningRoot, Slot
 from eth2.configs import Eth2GenesisConfig
+
+# When performing a chain sync (either fast or regular modes), we'll very often need to look
+# up recent blocks to validate the chain, and decoding their SSZ representation is
+# relatively expensive so we cache that here, but use a small cache because we *should* only
+# be looking up recent blocks. We cache by root instead of ssz representation as ssz
+# representation is not unique if different length configs are considered
+state_cache = LRU(128)
+block_cache = LRU(128)
 
 
 class AttestationKey(ssz.Serializable):
@@ -39,7 +50,7 @@ class BaseBeaconChainDB(ABC):
     def __init__(
         self, db: AtomicDatabaseAPI, genesis_config: Eth2GenesisConfig
     ) -> None:
-        pass
+        ...
 
     #
     # Block API
@@ -49,97 +60,99 @@ class BaseBeaconChainDB(ABC):
         self,
         block: BaseBeaconBlock,
         block_class: Type[BaseBeaconBlock],
-        fork_choice_scoring: ForkChoiceScoringFn,
+        fork_choice_scoring: BaseForkChoiceScoring,
     ) -> Tuple[Tuple[BaseBeaconBlock, ...], Tuple[BaseBeaconBlock, ...]]:
-        pass
+        ...
 
     @abstractmethod
     def get_canonical_block_root(self, slot: Slot) -> SigningRoot:
-        pass
+        ...
 
     @abstractmethod
     def get_genesis_block_root(self) -> SigningRoot:
-        pass
+        ...
 
     @abstractmethod
     def get_canonical_block_by_slot(
         self, slot: Slot, block_class: Type[BaseBeaconBlock]
     ) -> BaseBeaconBlock:
-        pass
+        ...
 
     @abstractmethod
     def get_canonical_head(self, block_class: Type[BaseBeaconBlock]) -> BaseBeaconBlock:
-        pass
+        ...
 
     @abstractmethod
     def get_canonical_head_root(self) -> SigningRoot:
-        pass
+        ...
 
     @abstractmethod
     def get_finalized_head(self, block_class: Type[BaseBeaconBlock]) -> BaseBeaconBlock:
-        pass
+        ...
 
     @abstractmethod
     def get_justified_head(self, block_class: Type[BaseBeaconBlock]) -> BaseBeaconBlock:
-        pass
+        ...
 
     @abstractmethod
     def get_block_by_root(
         self, block_root: SigningRoot, block_class: Type[BaseBeaconBlock]
     ) -> BaseBeaconBlock:
-        pass
+        ...
 
     @abstractmethod
     def get_slot_by_root(self, block_root: SigningRoot) -> Slot:
-        pass
+        ...
 
     @abstractmethod
     def get_block_signing_root_by_hash_tree_root(
         self, block_root: HashTreeRoot
     ) -> SigningRoot:
-        pass
+        ...
 
     @abstractmethod
-    def get_score(self, block_root: SigningRoot) -> int:
-        pass
+    def get_score(
+        self, block_root: SigningRoot, score_class: Type[BaseScore]
+    ) -> BaseScore:
+        ...
 
     @abstractmethod
     def block_exists(self, block_root: SigningRoot) -> bool:
-        pass
+        ...
 
     @abstractmethod
     def persist_block_chain(
         self,
         blocks: Iterable[BaseBeaconBlock],
         block_class: Type[BaseBeaconBlock],
-        fork_choice_scoring: Iterable[ForkChoiceScoringFn],
+        fork_choice_scoring: Iterable[BaseForkChoiceScoring],
     ) -> Tuple[Tuple[BaseBeaconBlock, ...], Tuple[BaseBeaconBlock, ...]]:
-        pass
+        ...
 
     @abstractmethod
-    def set_score(self, block: BaseBeaconBlock, score: int) -> None:
-        pass
+    def set_score(self, block: BaseBeaconBlock, score: BaseScore) -> None:
+        ...
 
     #
     # Beacon State
     #
     @abstractmethod
     def get_head_state_slot(self) -> Slot:
-        pass
+        ...
 
     @abstractmethod
     def get_state_root_by_slot(self, slot: Slot) -> Hash32:
-        pass
+        ...
 
     @abstractmethod
     def get_state_by_root(
         self, state_root: Hash32, state_class: Type[BeaconState]
     ) -> BeaconState:
-        pass
+        ...
 
     @abstractmethod
     def persist_state(self, state: BeaconState) -> None:
-        pass
+        ...
 
     #
     # Attestation API
@@ -148,22 +161,37 @@ class BaseBeaconChainDB(ABC):
     def get_attestation_key_by_root(
         self, attestation_root: HashTreeRoot
     ) -> Tuple[SigningRoot, int]:
-        pass
+        ...
 
     @abstractmethod
     def attestation_exists(self, attestation_root: HashTreeRoot) -> bool:
-        pass
+        ...
+
+    #
+    # Fork choice API
+    #
+    @abstractmethod
+    def get_fork_choice_context_data_for(self, fork: str) -> bytes:
+        ...
+
+    @abstractmethod
+    def persist_fork_choice_context(self, serialized_context: bytes, fork: str) -> None:
+        ...
+
+    @abstractmethod
+    def get_canonical_epoch_info(self) -> EpochInfo:
+        ...
 
     #
     # Raw Database API
     #
     @abstractmethod
     def exists(self, key: bytes) -> bool:
-        pass
+        ...
 
     @abstractmethod
     def get(self, key: bytes) -> bytes:
-        pass
+        ...
 
 
 class BeaconChainDB(BaseBeaconChainDB):
@@ -194,7 +222,7 @@ class BeaconChainDB(BaseBeaconChainDB):
         self,
         block: BaseBeaconBlock,
         block_class: Type[BaseBeaconBlock],
-        fork_choice_scoring: ForkChoiceScoringFn,
+        fork_choice_scoring: BaseForkChoiceScoring,
     ) -> Tuple[Tuple[BaseBeaconBlock, ...], Tuple[BaseBeaconBlock, ...]]:
         """
         Persist the given block.
@@ -211,7 +239,7 @@ class BeaconChainDB(BaseBeaconChainDB):
         db: DatabaseAPI,
         block: BaseBeaconBlock,
         block_class: Type[BaseBeaconBlock],
-        fork_choice_scoring: ForkChoiceScoringFn,
+        fork_choice_scoring: BaseForkChoiceScoring,
     ) -> Tuple[Tuple[BaseBeaconBlock, ...], Tuple[BaseBeaconBlock, ...]]:
         block_chain = (block,)
         scorings = (fork_choice_scoring,)
@@ -354,13 +382,20 @@ class BeaconChainDB(BaseBeaconChainDB):
         Raise BlockNotFound if it is not present in the db.
         """
         validate_word(block_root, title="block root")
+
+        if block_root in block_cache and block_root in db:
+            return block_cache[block_root]
+
         try:
             block_ssz = db[block_root]
         except KeyError:
             raise BlockNotFound(
                 "No block with signing root {0} found".format(encode_hex(block_root))
             )
-        return _decode_block(block_ssz, block_class)
+
+        block = ssz.decode(block_ssz, block_class)
+        block_cache[block_root] = block
+        return block
 
     def get_slot_by_root(self, block_root: SigningRoot) -> Slot:
         """
@@ -400,18 +435,22 @@ class BeaconChainDB(BaseBeaconChainDB):
             )
         return cast(SigningRoot, signing_root)
 
-    def get_score(self, block_root: SigningRoot) -> int:
-        return self._get_score(self.db, block_root)
+    def get_score(
+        self, block_root: SigningRoot, score_class: Type[BaseScore]
+    ) -> BaseScore:
+        return self._get_score(self.db, block_root, score_class)
 
     @staticmethod
-    def _get_score(db: DatabaseAPI, block_root: SigningRoot) -> int:
+    def _get_score(
+        db: DatabaseAPI, block_root: SigningRoot, score_class: Type[BaseScore]
+    ) -> BaseScore:
         try:
             encoded_score = db[SchemaV1.make_block_root_to_score_lookup_key(block_root)]
         except KeyError:
             raise BlockNotFound(
                 "No block with signing root {0} found".format(encode_hex(block_root))
             )
-        return ssz.decode(encoded_score, sedes=ssz.sedes.uint64)
+        return cast(BaseScore, score_class.deserialize(encoded_score))
 
     def block_exists(self, block_root: SigningRoot) -> bool:
         return self._block_exists(self.db, block_root)
@@ -425,31 +464,37 @@ class BeaconChainDB(BaseBeaconChainDB):
         self,
         blocks: Iterable[BaseBeaconBlock],
         block_class: Type[BaseBeaconBlock],
-        fork_choice_scorings: Iterable[ForkChoiceScoringFn],
+        fork_choice_scorings: Iterable[BaseForkChoiceScoring],
     ) -> Tuple[Tuple[BaseBeaconBlock, ...], Tuple[BaseBeaconBlock, ...]]:
         """
         Return two iterable of blocks, the first containing the new canonical blocks,
         the second containing the old canonical headers
         """
         with self.db.atomic_batch() as db:
+            try:
+                first_block = next(iter(blocks))
+                if first_block.is_genesis:
+                    self._handle_exceptional_justification_and_finality(first_block)
+            except StopIteration:
+                pass
             return self._persist_block_chain(
                 db, blocks, block_class, fork_choice_scorings
             )
 
     @staticmethod
     def _set_block_score_to_db(
-        db: DatabaseAPI, block: BaseBeaconBlock, score: int
-    ) -> int:
+        db: DatabaseAPI, block: BaseBeaconBlock, score: BaseScore
+    ) -> BaseScore:
         # NOTE if we change the score serialization, we will likely need to
         # patch up the fork choice logic.
         # We will decide the score serialization is fixed for now.
         db.set(
             SchemaV1.make_block_root_to_score_lookup_key(block.signing_root),
-            ssz.encode(score, sedes=ssz.sedes.uint64),
+            score.serialize(),
         )
         return score
 
-    def set_score(self, block: BaseBeaconBlock, score: int) -> None:
+    def set_score(self, block: BaseBeaconBlock, score: BaseScore) -> None:
         self.__class__._set_block_score_to_db(self.db, block, score)
 
     @classmethod
@@ -458,7 +503,7 @@ class BeaconChainDB(BaseBeaconChainDB):
         db: DatabaseAPI,
         blocks: Iterable[BaseBeaconBlock],
         block_class: Type[BaseBeaconBlock],
-        fork_choice_scorings: Iterable[ForkChoiceScoringFn],
+        fork_choice_scorings: Iterable[BaseForkChoiceScoring],
     ) -> Tuple[Tuple[BaseBeaconBlock, ...], Tuple[BaseBeaconBlock, ...]]:
         blocks_iterator = iter(blocks)
         scorings_iterator = iter(fork_choice_scorings)
@@ -473,7 +518,8 @@ class BeaconChainDB(BaseBeaconChainDB):
             previous_canonical_head = cls._get_canonical_head(
                 db, block_class
             ).signing_root
-            head_score = cls._get_score(db, previous_canonical_head)
+            score_class = first_scoring.get_score_class()
+            head_score = cls._get_score(db, previous_canonical_head, score_class)
         except CanonicalHeadNotFound:
             no_canonical_head = True
         else:
@@ -488,7 +534,7 @@ class BeaconChainDB(BaseBeaconChainDB):
                 )
             )
 
-        score = first_scoring(first_block)
+        score = first_scoring.score(first_block)
 
         curr_block_head = first_block
         db.set(curr_block_head.signing_root, ssz.encode(curr_block_head))
@@ -519,9 +565,9 @@ class BeaconChainDB(BaseBeaconChainDB):
             try:
                 next_scoring = next(scorings_iterator)
             except StopIteration:
-                raise MissingForkChoiceScoringFns
+                raise MissingForkChoiceScorings
 
-            score = next_scoring(curr_block_head)
+            score = next_scoring.score(curr_block_head)
             cls._set_block_score_to_db(db, curr_block_head, score)
 
         if no_canonical_head:
@@ -712,11 +758,17 @@ class BeaconChainDB(BaseBeaconChainDB):
         Raises StateNotFound if it is not present in the db.
         """
         # TODO: validate_state_root
+        if state_root in state_cache and state_root in db:
+            return state_cache[state_root]
+
         try:
             state_ssz = db[state_root]
         except KeyError:
             raise StateNotFound(f"No state with root {encode_hex(state_root)} found")
-        return _decode_state(state_ssz, state_class)
+
+        state = ssz.decode(state_ssz, state_class)
+        state_cache[state] = state
+        return state
 
     def persist_state(self, state: BeaconState) -> None:
         """
@@ -742,6 +794,10 @@ class BeaconChainDB(BaseBeaconChainDB):
         else:
             if state.slot > head_state_slot:
                 self._add_head_state_slot_lookup(state.slot)
+
+        # For metrics
+        # TODO: only persist per epoch transition
+        self._persist_canonical_epoch_info(self.db, state)
 
     def _update_finalized_head(self, finalized_root: SigningRoot) -> None:
         """
@@ -817,6 +873,28 @@ class BeaconChainDB(BaseBeaconChainDB):
         self._update_finalized_head(genesis_root)
         self._update_justified_head(genesis_root, self.genesis_config.GENESIS_EPOCH)
 
+    @staticmethod
+    def _persist_canonical_epoch_info(db: DatabaseAPI, state: BeaconState) -> None:
+        epoch_info = EpochInfo(
+            previous_justified_checkpoint=state.previous_justified_checkpoint,
+            current_justified_checkpoint=state.current_justified_checkpoint,
+            finalized_checkpoint=state.finalized_checkpoint,
+        )
+        db.set(SchemaV1.make_canonical_epoch_info_lookup_key(), ssz.encode(epoch_info))
+
+    def get_canonical_epoch_info(self) -> EpochInfo:
+        return self._get_canonical_epoch_info(self.db)
+
+    @staticmethod
+    def _get_canonical_epoch_info(db: DatabaseAPI) -> EpochInfo:
+        key = SchemaV1.make_canonical_epoch_info_lookup_key()
+        try:
+            epoch_info = db[key]
+        except KeyError:
+            raise EpochInfoNotFound("Canonical EpochInfo not found")
+        else:
+            return ssz.decode(epoch_info, EpochInfo)
+
     #
     # Attestation API
     #
@@ -862,6 +940,17 @@ class BeaconChainDB(BaseBeaconChainDB):
         return self.exists(lookup_key)
 
     #
+    # Fork choice API
+    #
+    def get_fork_choice_context_data_for(self, fork: str) -> bytes:
+        # TODO implement
+        raise MissingForkChoiceContext(f"Missing context for fork `{fork}`")
+
+    def persist_fork_choice_context(self, serialized_context: bytes, fork: str) -> None:
+        # TODO implement
+        pass
+
+    #
     # Raw Database API
     #
     def exists(self, key: bytes) -> bool:
@@ -875,17 +964,3 @@ class BeaconChainDB(BaseBeaconChainDB):
         Return the value for the given key or a KeyError if it doesn't exist in the database.
         """
         return self.db[key]
-
-
-# When performing a chain sync (either fast or regular modes), we'll very often need to look
-# up recent blocks to validate the chain, and decoding their SSZ representation is
-# relatively expensive so we cache that here, but use a small cache because we *should* only
-# be looking up recent blocks.
-@functools.lru_cache(128)
-def _decode_block(block_ssz: bytes, sedes: Type[BaseBeaconBlock]) -> BaseBeaconBlock:
-    return ssz.decode(block_ssz, sedes=sedes)
-
-
-@functools.lru_cache(128)
-def _decode_state(state_ssz: bytes, state_class: Type[BeaconState]) -> BeaconState:
-    return ssz.decode(state_ssz, sedes=state_class)

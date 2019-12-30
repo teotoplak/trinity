@@ -46,10 +46,27 @@ class AttestationRootNotFound(BeaconDBException):
     pass
 
 
-class MissingForkChoiceScoringFns(BeaconDBException):
+class MissingForkChoiceScorings(BeaconDBException):
     """
     Exception raised if a client tries to score a block without providing
     the ability to generate a score via a ``scoring``.
     """
 
     pass
+
+
+class MissingForkChoiceContext(BeaconDBException):
+    """
+    Exception raised if the database lacks the state required for the
+    chain's fork choice.
+    """
+
+    pass
+
+
+class EpochInfoNotFound(BeaconDBException):
+    """
+    Exception raised if no EpochInfo is set in this database.
+    """
+
+    ...

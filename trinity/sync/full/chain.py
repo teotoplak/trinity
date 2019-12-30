@@ -307,7 +307,7 @@ class BaseBodyChainSyncer(BaseService, PeerSubscriber):
                 completed_headers = trivial_headers + received_headers
 
         except BaseP2PError as exc:
-            self.logger.info("Unexpected p2p perror while downloading body from peer: %s", exc)
+            self.logger.info("Unexpected p2p error while downloading body from %s: %s", peer, exc)
             self.logger.debug("Problem downloading body from peer, dropping...", exc_info=True)
         else:
             if len(non_trivial_headers) == 0:
@@ -412,7 +412,7 @@ class BaseBodyChainSyncer(BaseService, PeerSubscriber):
             self.logger.debug("Peer went away, cancelling the block body request and moving on...")
             return tuple()
         except Exception:
-            self.logger.exception("Unknown error when getting block bodies")
+            self.logger.exception("Unknown error when getting block bodies from %s", peer)
             raise
 
         return block_body_bundles
@@ -484,7 +484,7 @@ class FastChainSyncer(BaseService):
         self.run_daemon(self._header_syncer)
         await self._body_syncer.run()
         # The body syncer will exit when the body for the target header hash has been persisted
-        self._header_syncer.cancel_nowait()
+        await self._header_syncer.cancel()
 
 
 @enum.unique
@@ -790,7 +790,7 @@ class FastChainBodySyncer(BaseBodyChainSyncer):
                 completed_headers,
             )
         except BaseP2PError as exc:
-            self.logger.info("Unexpected p2p perror while downloading receipt from peer: %s", exc)
+            self.logger.info("Unexpected p2p err while downloading receipt from %s: %s", peer, exc)
             self.logger.debug("Problem downloading receipt from peer, dropping...", exc_info=True)
         else:
             # peer completed successfully, so have it get back in line for processing

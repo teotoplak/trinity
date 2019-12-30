@@ -3,7 +3,9 @@ import asyncio
 from typing import (
     Any,
     AsyncIterator,
+    Dict,
     Iterable,
+    Collection,
     Tuple,
     Type,
     Sequence,
@@ -13,12 +15,12 @@ from async_generator import asynccontextmanager
 
 from cancel_token import CancelToken
 
+from lahja import EndpointAPI
 from libp2p.crypto.secp256k1 import create_new_key_pair
 from libp2p.peer.id import ID
 from libp2p.peer.peerinfo import (
     PeerInfo,
 )
-
 
 from eth_utils import to_tuple
 
@@ -33,7 +35,8 @@ from p2p.tools.factories import (
 )
 
 from eth2.beacon.constants import EMPTY_SIGNATURE, ZERO_SIGNING_ROOT
-from eth2.beacon.fork_choice.higher_slot import higher_slot_scoring
+from eth2.beacon.fork_choice.higher_slot import HigherSlotScoring
+from eth2.beacon.types.states import BeaconState
 from eth2.beacon.types.blocks import (
     BeaconBlock,
     BeaconBlockBody,
@@ -55,7 +58,6 @@ from trinity.sync.beacon.chain import BeaconChainSyncer
 from .factories import (
     AtomicDBFactory,
 )
-
 
 try:
     import factory
@@ -84,7 +86,9 @@ class NodeFactory(factory.Factory):
     cancel_token = None
     bootstrap_nodes = None
     preferred_nodes: Tuple[Multiaddr, ...] = tuple()
+    subnets: None
     chain = factory.SubFactory(BeaconChainFactory)
+    event_bus = None
 
     @classmethod
     def create_batch(cls, number: int) -> Tuple[Node, ...]:
@@ -108,21 +112,32 @@ class PeerFactory(factory.Factory):
 @asynccontextmanager
 async def ConnectionPairFactory(
     alice_chaindb: AsyncBeaconChainDB = None,
+    alice_branch: Collection[BaseBeaconBlock] = None,
     bob_chaindb: AsyncBeaconChainDB = None,
+    bob_branch: Collection[BaseBeaconBlock] = None,
+    genesis_state: BeaconState = None,
+    alice_event_bus: EndpointAPI = None,
     cancel_token: CancelToken = None,
     handshake: bool = True,
 ) -> AsyncIterator[Tuple[Node, Node]]:
     if cancel_token is None:
         cancel_token = CancelTokenFactory()
-    alice_kwargs = {}
-    bob_kwargs = {}
+    alice_kwargs: Dict[str, Any] = {}
+    bob_kwargs: Dict[str, Any] = {}
 
     if alice_chaindb is not None:
         alice_kwargs["chain__db"] = alice_chaindb.db
+    if alice_branch is not None:
+        alice_kwargs["chain__branch"] = alice_branch
     if bob_chaindb is not None:
         bob_kwargs["chain__db"] = bob_chaindb.db
+    if bob_branch is not None:
+        bob_kwargs["chain__branch"] = bob_branch
+    if genesis_state is not None:
+        alice_kwargs["chain__genesis_state"] = genesis_state
+        bob_kwargs["chain__genesis_state"] = genesis_state
 
-    alice = NodeFactory(cancel_token=cancel_token, **alice_kwargs)
+    alice = NodeFactory(cancel_token=cancel_token, event_bus=alice_event_bus, **alice_kwargs)
     bob = NodeFactory(cancel_token=cancel_token, **bob_kwargs)
     async with run_service(alice), run_service(bob):
         await asyncio.sleep(0.01)
@@ -141,12 +156,12 @@ async def ConnectionPairFactory(
 
 class BeaconBlockBodyFactory(factory.Factory):
     class Meta:
-        model = BeaconBlockBody
+        model = BeaconBlockBody.create
 
 
 class BeaconBlockFactory(factory.Factory):
     class Meta:
-        model = BeaconBlock
+        model = BeaconBlock.create
 
     slot = SERENITY_GENESIS_CONFIG.GENESIS_SLOT
     parent_root = ZERO_SIGNING_ROOT
@@ -206,24 +221,6 @@ class AsyncBeaconChainDBFactory(factory.Factory):
     db = factory.SubFactory(AtomicDBFactory)
     genesis_config = SERENITY_GENESIS_CONFIG
 
-    @classmethod
-    def _create(cls,
-                model_class: Type[AsyncBeaconChainDB],
-                *args: Any,
-                **kwargs: Any) -> AsyncBeaconChainDB:
-        blocks = kwargs.pop('blocks', None)
-        if blocks is None:
-            blocks = (BeaconBlockFactory(),)
-        chain_db = super()._create(model_class, *args, **kwargs)
-        if len(blocks) > 0:
-            chain_db._handle_exceptional_justification_and_finality(blocks[0])
-        chain_db.persist_block_chain(
-            blocks,
-            BeaconBlock,
-            (higher_slot_scoring,) * len(blocks)
-        )
-        return chain_db
-
 
 class ReceiveServerFactory(factory.Factory):
     class Meta:
@@ -232,6 +229,7 @@ class ReceiveServerFactory(factory.Factory):
     chain = None
     p2p_node = factory.SubFactory(NodeFactory)
     topic_msg_queues = None
+    subnets = None
     cancel_token = None
 
     @classmethod
@@ -254,7 +252,7 @@ class SimpleWriterBlockImporter:
         BaseBeaconBlock, Tuple[BaseBeaconBlock, ...], Tuple[BaseBeaconBlock, ...]
     ]:
         new_blocks, old_blocks = self._chain_db.persist_block(
-            block, BeaconBlock, higher_slot_scoring
+            block, BeaconBlock, HigherSlotScoring()
         )
         return None, new_blocks, old_blocks
 
@@ -269,4 +267,5 @@ class BeaconChainSyncerFactory(factory.Factory):
         lambda obj: SimpleWriterBlockImporter(obj.chain_db)
     )
     genesis_config = SERENITY_GENESIS_CONFIG
+    event_bus = None
     token = None

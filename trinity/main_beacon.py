@@ -1,12 +1,9 @@
 from argparse import (
     ArgumentParser,
-    Namespace,
 )
 import logging
 import multiprocessing
 from typing import (
-    Any,
-    Dict,
     Tuple,
     Type,
 )
@@ -21,8 +18,8 @@ from eth2.beacon.types.blocks import BeaconBlock
 from trinity.bootstrap import (
     main_entry,
 )
+from trinity.boot_info import BootInfo
 from trinity.config import (
-    TrinityConfig,
     BeaconAppConfig
 )
 from trinity.constants import (
@@ -37,18 +34,13 @@ from trinity.initialization import (
 from trinity.components.registry import (
     get_components_for_beacon_client,
 )
+from trinity._utils.logging import child_process_logging
 from trinity._utils.ipc import (
     wait_for_ipc,
     kill_process_gracefully,
 )
-from trinity._utils.logging import (
-    with_queued_logging,
-)
 from trinity._utils.mp import (
     ctx,
-)
-from trinity._utils.profiling import (
-    setup_cprofiler,
 )
 
 
@@ -61,14 +53,10 @@ def main_beacon() -> None:
     )
 
 
-def trinity_boot(args: Namespace,
-                 trinity_config: TrinityConfig,
-                 extra_kwargs: Dict[str, Any],
-                 listener: logging.handlers.QueueListener,
-                 logger: logging.Logger) -> Tuple[multiprocessing.Process, ...]:
-    # start the listener thread to handle logs produced by other processes in
-    # the local logger.
-    listener.start()
+def trinity_boot(boot_info: BootInfo) -> Tuple[multiprocessing.Process, ...]:
+    logger = logging.getLogger('trinity')
+
+    trinity_config = boot_info.trinity_config
 
     ensure_beacon_dirs(trinity_config.get_app_config(BeaconAppConfig))
 
@@ -77,10 +65,9 @@ def trinity_boot(args: Namespace,
         name="DB",
         target=run_database_process,
         args=(
-            trinity_config,
+            boot_info,
             LevelDB,
         ),
-        kwargs=extra_kwargs,
     )
 
     # start the processes
@@ -98,22 +85,23 @@ def trinity_boot(args: Namespace,
     return (database_server_process,)
 
 
-@setup_cprofiler('profile_db_process')
-@with_queued_logging
-def run_database_process(trinity_config: TrinityConfig, db_class: Type[LevelDB]) -> None:
-    with trinity_config.process_id_file('database'):
-        app_config = trinity_config.get_app_config(BeaconAppConfig)
-        chain_config = app_config.get_chain_config()
+def run_database_process(boot_info: BootInfo, db_class: Type[LevelDB]) -> None:
+    with child_process_logging(boot_info):
+        trinity_config = boot_info.trinity_config
 
-        base_db = db_class(db_path=app_config.database_dir)
-        chaindb = BeaconChainDB(base_db, chain_config.genesis_config)
+        with trinity_config.process_id_file('database'):
+            app_config = trinity_config.get_app_config(BeaconAppConfig)
+            chain_config = app_config.get_chain_config()
 
-        if not is_beacon_database_initialized(chaindb, BeaconBlock):
-            initialize_beacon_database(chain_config, chaindb, base_db, BeaconBlock)
+            base_db = db_class(db_path=app_config.database_dir)
+            chaindb = BeaconChainDB(base_db, chain_config.genesis_config)
 
-        manager = DBManager(base_db)
-        with manager.run(trinity_config.database_ipc_path):
-            try:
-                manager.wait_stopped()
-            except KeyboardInterrupt:
-                pass
+            if not is_beacon_database_initialized(chaindb, BeaconBlock):
+                initialize_beacon_database(chain_config, chaindb, base_db, BeaconBlock)
+
+            manager = DBManager(base_db)
+            with manager.run(trinity_config.database_ipc_path):
+                try:
+                    manager.wait_stopped()
+                except KeyboardInterrupt:
+                    pass

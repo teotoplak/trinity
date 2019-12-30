@@ -1,9 +1,7 @@
-from argparse import ArgumentParser, Namespace
+from argparse import ArgumentParser
 import logging
 import multiprocessing
 from typing import (
-    Any,
-    Dict,
     Tuple,
     Type,
 )
@@ -11,11 +9,11 @@ from typing import (
 from eth.db.backends.level import LevelDB
 from eth.db.chain import ChainDB
 
+from trinity.boot_info import BootInfo
 from trinity.bootstrap import (
     main_entry,
 )
 from trinity.config import (
-    TrinityConfig,
     Eth1AppConfig,
 )
 from trinity.constants import (
@@ -35,13 +33,10 @@ from trinity._utils.ipc import (
     kill_process_gracefully,
 )
 from trinity._utils.logging import (
-    with_queued_logging,
+    child_process_logging,
 )
 from trinity._utils.mp import (
     ctx,
-)
-from trinity._utils.profiling import (
-    setup_cprofiler,
 )
 
 
@@ -54,26 +49,20 @@ def main() -> None:
     )
 
 
-def trinity_boot(args: Namespace,
-                 trinity_config: TrinityConfig,
-                 extra_kwargs: Dict[str, Any],
-                 listener: logging.handlers.QueueListener,
-                 logger: logging.Logger) -> Tuple[multiprocessing.Process, ...]:
-    # start the listener thread to handle logs produced by other processes in
-    # the local logger.
-    listener.start()
-
+def trinity_boot(boot_info: BootInfo) -> Tuple[multiprocessing.Process]:
+    trinity_config = boot_info.trinity_config
     ensure_eth1_dirs(trinity_config.get_app_config(Eth1AppConfig))
+
+    logger = logging.getLogger('trinity')
 
     # First initialize the database process.
     database_server_process: multiprocessing.Process = ctx.Process(
         name="DB",
         target=run_database_process,
         args=(
-            trinity_config,
+            boot_info,
             LevelDB,
         ),
-        kwargs=extra_kwargs,
     )
 
     # start the processes
@@ -92,22 +81,23 @@ def trinity_boot(args: Namespace,
     return (database_server_process,)
 
 
-@setup_cprofiler('profile_db_process')
-@with_queued_logging
-def run_database_process(trinity_config: TrinityConfig, db_class: Type[LevelDB]) -> None:
-    with trinity_config.process_id_file('database'):
-        app_config = trinity_config.get_app_config(Eth1AppConfig)
+def run_database_process(boot_info: BootInfo, db_class: Type[LevelDB]) -> None:
+    with child_process_logging(boot_info):
+        trinity_config = boot_info.trinity_config
 
-        base_db = db_class(db_path=app_config.database_dir)
-        chaindb = ChainDB(base_db)
+        with trinity_config.process_id_file('database'):
+            app_config = trinity_config.get_app_config(Eth1AppConfig)
 
-        if not is_database_initialized(chaindb):
-            chain_config = app_config.get_chain_config()
-            initialize_database(chain_config, chaindb, base_db)
+            base_db = db_class(db_path=app_config.database_dir)
+            chaindb = ChainDB(base_db)
 
-        manager = DBManager(base_db)
-        with manager.run(trinity_config.database_ipc_path):
-            try:
-                manager.wait_stopped()
-            except KeyboardInterrupt:
-                pass
+            if not is_database_initialized(chaindb):
+                chain_config = app_config.get_chain_config()
+                initialize_database(chain_config, chaindb, base_db)
+
+            manager = DBManager(base_db)
+            with manager.run(trinity_config.database_ipc_path):
+                try:
+                    manager.wait_stopped()
+                except KeyboardInterrupt:
+                    pass

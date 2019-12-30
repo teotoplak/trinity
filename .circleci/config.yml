@@ -169,6 +169,12 @@ jobs:
       - image: circleci/python:3.6
         environment:
           TOXENV: py36-rpc-state-homestead
+  py36-rpc-state-istanbul:
+    <<: *common
+    docker:
+      - image: circleci/python:3.6
+        environment:
+          TOXENV: py36-rpc-state-istanbul
   py36-rpc-state-petersburg:
     <<: *common
     docker:
@@ -274,12 +280,6 @@ jobs:
       - image: circleci/python:3.6
         environment:
           TOXENV: py36-eth1-components
-  py36-eth2-components:
-    <<: *common
-    docker:
-      - image: circleci/python:3.6
-        environment:
-          TOXENV: py36-eth2-components
 
   py37-rpc-state-quadratic:
     <<: *common
@@ -379,12 +379,19 @@ jobs:
         environment:
           TOXENV: py37-eth2-components
 
-  docker-image-build-test:
+  docker-trinity-image-build-test:
     machine: true
     steps:
       - checkout
-      - run: docker build -t ethereum/trinity:test-build .
+      - run: docker build -t ethereum/trinity:test-build -f ./docker/Dockerfile .
       - run: docker run ethereum/trinity:test-build --help
+
+  docker-trinity-beacon-image-build-test:
+    machine: true
+    steps:
+      - checkout
+      - run: docker build -t ethereum/trinity-beacon:test-build -f ./docker/beacon.Dockerfile .
+      - run: docker run ethereum/trinity-beacon:test-build --help
 
 workflows:
   version: 2
@@ -431,7 +438,6 @@ workflows:
       - py36-eth2-utils
       - py36-eth2-fixtures
       - py36-eth2-integration
-      - py36-eth2-components
       - py36-eth1-components
 
       - py36-lightchain_integration
@@ -441,4 +447,5 @@ workflows:
       - py37-lint
       - py37-lint-eth2
 
-      - docker-image-build-test
+      - docker-trinity-image-build-test
+      - docker-trinity-beacon-image-build-test

@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +13,7 @@ from eth_utils.toolz import (
 
 from eth_utils import (
     add_0x_prefix,
+    decode_hex,
     encode_hex,
     is_address,
     is_hex,
@@ -21,6 +21,7 @@ from eth_utils import (
     is_string,
     to_checksum_address,
     to_tuple,
+    to_int,
 )
 from eth_utils.curried import (
     apply_formatter_if,
@@ -37,6 +38,9 @@ from eth.tools.fixtures import (
     generate_fixture_tests,
     load_fixture,
     should_run_slow_tests,
+)
+from eth._utils.padding import (
+    pad32,
 )
 
 from trinity.chains.full import (
@@ -55,7 +59,7 @@ from trinity.rpc.modules import (
 ROOT_PROJECT_DIR = Path(__file__).parent.parent.parent
 
 
-BASE_FIXTURE_PATH = os.path.join(ROOT_PROJECT_DIR, 'fixtures', 'BlockchainTests')
+BASE_FIXTURE_PATH = ROOT_PROJECT_DIR / 'fixtures' / 'BlockchainTests'
 
 SLOW_TESTS = (
     'bcExploitTest/SuicideIssue.json',
@@ -70,6 +74,7 @@ SLOW_TESTS = (
     'randomStatetest94_Byzantium',
     'randomStatetest94_Constantinople',
     'randomStatetest94_ConstantinopleFix',
+    'randomStatetest94_Istanbul',
     'ShanghaiLove_Homestead',
     'ShanghaiLove_Frontier',
     'static_Call1024PreCalls_d1g0v0',
@@ -142,12 +147,28 @@ INCORRECT_UPSTREAM_TESTS = {
     ('GeneralStateTests/stSStoreTest/InitCollision_d0g0v0.json', 'InitCollision_d0g0v0_ConstantinopleFix'),  # noqa: E501
     ('GeneralStateTests/stSStoreTest/InitCollision_d1g0v0.json', 'InitCollision_d1g0v0_ConstantinopleFix'),  # noqa: E501
     ('GeneralStateTests/stSStoreTest/InitCollision_d3g0v0.json', 'InitCollision_d3g0v0_ConstantinopleFix'),  # noqa: E501
+    ('GeneralStateTests/stSStoreTest/InitCollision.json', 'InitCollision_d0g0v0_Istanbul'),  # noqa: E501
+    ('GeneralStateTests/stSStoreTest/InitCollision.json', 'InitCollision_d1g0v0_Istanbul'),  # noqa: E501
+    ('GeneralStateTests/stSStoreTest/InitCollision.json', 'InitCollision_d3g0v0_Istanbul'),  # noqa: E501
 }
+
+
+def pad32_dict_values(some_dict):
+    return {
+        key: encode_hex(pad32(decode_hex(value)))
+        for key, value in some_dict.items()
+    }
+
+
+def map_0x_to_0x0(value):
+    return '0x0' if value == '0x' else value
+
 
 RPC_STATE_NORMALIZERS = {
     'balance': remove_leading_zeros,
     'code': empty_to_0x,
     'nonce': remove_leading_zeros,
+    'storage': pad32_dict_values
 }
 
 RPC_BLOCK_REMAPPERS = {
@@ -176,7 +197,7 @@ RPC_TRANSACTION_NORMALIZERS = {
     'nonce': remove_leading_zeros,
     'gasLimit': remove_leading_zeros,
     'gasPrice': remove_leading_zeros,
-    'value': remove_leading_zeros,
+    'value': compose(remove_leading_zeros, map_0x_to_0x0),
     'data': empty_to_0x,
     'to': compose(
         apply_formatter_if(is_address, to_checksum_address),
@@ -298,8 +319,8 @@ async def validate_account_state(rpc, state, addr, at_block):
             at_block=at_block
         )
     for key in state['storage']:
-        position = '0x0' if key == '0x' else key
-        expected_storage = state['storage'][key]
+        position = map_0x_to_0x0(key)
+        expected_storage = standardized_state['storage'][key]
         await assert_rpc_result(
             rpc,
             'eth_getStorageAt',
@@ -361,14 +382,40 @@ def validate_rpc_transaction_vs_fixture(transaction, fixture):
     assert actual_transaction == expected
 
 
-async def validate_transaction_by_index(rpc, transaction_fixture, at_block, index):
-    if is_by_hash(at_block):
+async def validate_transaction_by_index(rpc, block_fixture, transaction_fixture, at_block, index):
+    block_by_hash = is_by_hash(at_block)
+    if block_by_hash:
         rpc_method = 'eth_getTransactionByBlockHashAndIndex'
     else:
         rpc_method = 'eth_getTransactionByBlockNumberAndIndex'
     result, error = await call_rpc(rpc, rpc_method, [at_block, hex(index)])
     assert error is None
     validate_rpc_transaction_vs_fixture(result, transaction_fixture)
+
+    if not block_by_hash:
+        # Only try to lookup the transaction by its hash if we know it is in a block
+        # that we can refer to by its number. Otherwise, it may be that we try to lookup
+        # a transaction by its hash that is not in the canonical chain which isn't supported.
+        await validate_transaction_by_hash(rpc, result['hash'], transaction_fixture)
+        await validate_transaction_receipt(rpc, result['hash'], block_fixture, transaction_fixture)
+
+
+async def validate_transaction_by_hash(rpc, tx_hash, transaction_fixture):
+    result, error = await call_rpc(rpc, 'eth_getTransactionByHash', [tx_hash])
+    assert error is None
+    validate_rpc_transaction_vs_fixture(result, transaction_fixture)
+
+
+async def validate_transaction_receipt(rpc, tx_hash, block_fixture, transaction_fixture):
+    result, error = await call_rpc(rpc, 'eth_getTransactionReceipt', [tx_hash])
+    assert error is None
+    header_fixture = fixture_block_in_rpc_format(block_fixture['blockHeader'])
+    tx_index = to_int(hexstr=result['transactionIndex'])
+    tx_fixture = block_fixture['transactions'][tx_index]
+
+    assert result['to'] == add_0x_prefix(tx_fixture['to'])
+    assert result['blockHash'] == header_fixture['hash']
+    assert result['blockNumber'] == header_fixture['number']
 
 
 async def validate_block(rpc, block_fixture, at_block):
@@ -384,7 +431,8 @@ async def validate_block(rpc, block_fixture, at_block):
     assert len(result['transactions']) == len(block_fixture['transactions'])
 
     for index, transaction_fixture in enumerate(block_fixture['transactions']):
-        await validate_transaction_by_index(rpc, transaction_fixture, at_block, index)
+        await validate_transaction_by_index(
+            rpc, block_fixture, transaction_fixture, at_block, index)
 
     await validate_transaction_count(rpc, block_fixture, at_block)
 
@@ -438,8 +486,7 @@ async def validate_uncles(rpc, block_fixture, at_block):
 def chain_fixture(fixture_data):
     fixture_path, fixture_key, fixture_fork = fixture_data
     fixture = load_fixture(fixture_path, fixture_key)
-    if fixture_fork == 'Istanbul':
-        pytest.skip('Istanbul VM rules not yet supported')
+
     return fixture
 
 
@@ -447,15 +494,92 @@ class MainnetFullChain(FullChain):
     vm_configuration = MainnetChain.vm_configuration
 
 
-@pytest.mark.asyncio
-async def test_rpc_against_fixtures(event_bus, chain_fixture, fixture_data):
+async def setup_rpc_server(event_bus, chain_fixture, fixture_path):
     chain = MainnetFullChain(None)
     rpc = RPCServer(initialize_eth1_modules(chain, event_bus), chain, event_bus)
 
     setup_result, setup_error = await call_rpc(rpc, 'evm_resetToGenesisFixture', [chain_fixture])
     # We need to advance the event loop for modules to be able to pickup the new chain
     await asyncio.sleep(0)
-    assert setup_error is None and setup_result is True, "cannot load chain for {0}".format(fixture_data)  # noqa: E501
+    assert setup_error is None and setup_result is True, f"cannot load chain for {fixture_path}"
+    return rpc
+
+
+@pytest.mark.parametrize(
+    "tx_hash, fixture, expected_result",
+    (
+        (
+            "0x50406b46b2face98d3b1ccb3e8f1e9b490617d1b366568b4786847867dcdc7e8",
+            ('ValidBlocks/bcValidBlockTest/ExtraData32.json', 'ExtraData32_Homestead'),
+            {
+                'blockHash': '0x047635136e99cd68496efc834378e678538c64445be3c4ce4f1ebec5ca5c5fcf',
+                'blockNumber': '0x1',
+                'contractAddress': None,
+                'cumulativeGasUsed': '0x560b',
+                'from': '0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b',
+                'gasUsed': '0x560b',
+                'logs': [{
+                    'address': '0x095e7baea6a6c7c4c2dfeb977efac326af552d87',
+                    'data': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+                    'blockHash': '0x047635136e99cd68496efc834378e678538c64445be3c4ce4f1ebec5ca5c5fcf',  # noqa: E501
+                    'blockNumber': '0x1',
+                    'logIndex': '0x0',
+                    'removed': False,
+                    'topics': ['0x00'],
+                    'transactionHash': '0x50406b46b2face98d3b1ccb3e8f1e9b490617d1b366568b4786847867dcdc7e8',  # noqa: E501
+                    'transactionIndex': '0x0'
+                }],
+                'logsBloom': '0x00000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020000000000000000000800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020000000000040000000000000000000000000000000000000000000000000000000',  # noqa: E501
+                'root': '0x24d2203a1c8ad4d1c75b526aaa429b440208f863d26b599cb016b17bae845167',
+                'to': '0x095e7baea6a6c7c4c2dfeb977efac326af552d87',
+                'transactionHash': '0x50406b46b2face98d3b1ccb3e8f1e9b490617d1b366568b4786847867dcdc7e8',  # noqa: E501
+                'transactionIndex': '0x0'
+            }
+        ),
+        (
+            "0xd6cda738c9f26fdaf805c6335ceec07dd57d1d081142b9c7ec7de2afdb79a5c4",
+            ('ValidBlocks/bcBlockGasLimitTest/TransactionGasHigherThanLimit2p63m1.json', 'TransactionGasHigherThanLimit2p63m1_EIP158'),  # noqa: E501
+            {
+                'blockHash': '0x66649dd76e3155944f61e5f012fd920bbb22dca1ea211d392cbc49992cc1c789',
+                'blockNumber': '0x1',
+                'contractAddress': None,
+                'cumulativeGasUsed': '0xa410',
+                'from': '0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b',
+                'gasUsed': '0x5208',
+                'logs': [],
+                'logsBloom': '0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',  # noqa: E501
+                'root': '0xd9778a6246f1547ac91548f6ac374d1c3691d70c46186ab2470a2dcd009a54cd',
+                'to': '0xaaaf5374fce5edbc8e2a8697c15331677e6ebf0b',
+                'transactionHash': '0xd6cda738c9f26fdaf805c6335ceec07dd57d1d081142b9c7ec7de2afdb79a5c4',  # noqa: E501
+                'transactionIndex': '0x1'
+            }
+        ),
+    ),
+)
+@pytest.mark.asyncio
+async def test_eth_getTransactionReceipt(event_bus, tx_hash, fixture, expected_result):
+
+    fixture_path = BASE_FIXTURE_PATH / fixture[0]
+    chain_fixture = load_fixture(fixture_path, fixture[1])
+
+    rpc = await setup_rpc_server(event_bus, chain_fixture, fixture_path)
+
+    await validate_accounts(rpc, chain_fixture['pre'])
+
+    for block_fixture in chain_fixture['blocks']:
+
+        block_result, block_error = await call_rpc(rpc, 'evm_applyBlockFixture', [block_fixture])
+        assert block_error is None
+        assert block_result == block_fixture['rlp']
+
+    result, error = await call_rpc(rpc, 'eth_getTransactionReceipt', [tx_hash])
+
+    assert result == expected_result
+
+
+@pytest.mark.asyncio
+async def test_rpc_against_fixtures(event_bus, chain_fixture, fixture_data):
+    rpc = await setup_rpc_server(event_bus, chain_fixture, fixture_data[0])
 
     await validate_accounts(rpc, chain_fixture['pre'])
 

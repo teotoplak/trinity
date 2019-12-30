@@ -8,11 +8,12 @@ import pytest
 import ssz
 
 from eth2.beacon.chains.base import BaseBeaconChain
-from eth2.beacon.chains.testnet import TestnetChain as _TestnetChain
-from eth2.beacon.fork_choice.higher_slot import higher_slot_scoring
-from eth2.beacon.operations.attestation_pool import AttestationPool as TempPool
+from eth2.beacon.chains.testnet import SkeletonLakeChain
+from eth2.beacon.fork_choice.higher_slot import HigherSlotScoring
 from eth2.beacon.state_machines.forks.serenity.blocks import SerenityBeaconBlock
-from eth2.beacon.state_machines.forks.xiao_long_bao.configs import XIAO_LONG_BAO_CONFIG
+from eth2.beacon.state_machines.forks.skeleton_lake.config import (
+    MINIMAL_SERENITY_CONFIG,
+)
 from eth2.beacon.types.attestation_data import AttestationData
 from eth2.beacon.types.attestations import Attestation
 from eth2.beacon.types.blocks import BaseBeaconBlock, BeaconBlock
@@ -20,8 +21,11 @@ from eth2.beacon.typing import FromBlockParams
 from eth2.configs import Eth2GenesisConfig
 from trinity.db.beacon.chain import AsyncBeaconChainDB
 from trinity.protocol.bcc_libp2p.configs import (
+    ATTESTATION_SUBNET_COUNT,
+    PUBSUB_TOPIC_BEACON_AGGREGATE_AND_PROOF,
     PUBSUB_TOPIC_BEACON_ATTESTATION,
     PUBSUB_TOPIC_BEACON_BLOCK,
+    PUBSUB_TOPIC_COMMITTEE_BEACON_ATTESTATION,
 )
 from trinity.protocol.bcc_libp2p.servers import AttestationPool, OrphanBlockPool
 from trinity.tools.async_method import wait_until_true
@@ -33,7 +37,7 @@ from trinity.tools.bcc_factories import (
 )
 
 
-class FakeChain(_TestnetChain):
+class FakeChain(SkeletonLakeChain):
     chaindb_class = AsyncBeaconChainDB
 
     def import_block(
@@ -50,17 +54,17 @@ class FakeChain(_TestnetChain):
         except BlockNotFound:
             raise ValidationError
         (new_canonical_blocks, old_canonical_blocks) = self.chaindb.persist_block(
-            block, block.__class__, higher_slot_scoring
+            block, block.__class__, HigherSlotScoring()
         )
         return block, new_canonical_blocks, old_canonical_blocks
 
 
 async def get_fake_chain() -> FakeChain:
-    genesis_config = Eth2GenesisConfig(XIAO_LONG_BAO_CONFIG)
+    genesis_config = Eth2GenesisConfig(MINIMAL_SERENITY_CONFIG)
     chain_db = AsyncBeaconChainDBFactory(genesis_config=genesis_config)
-    return FakeChain(
-        base_db=chain_db.db, attestation_pool=TempPool(), genesis_config=genesis_config
-    )
+    genesis_block = BeaconBlockFactory()
+    chain_db.persist_block(genesis_block, SerenityBeaconBlock, HigherSlotScoring())
+    return FakeChain(base_db=chain_db.db, genesis_config=genesis_config)
 
 
 def get_blocks(
@@ -85,9 +89,18 @@ async def receive_server():
     topic_msg_queues = {
         PUBSUB_TOPIC_BEACON_BLOCK: asyncio.Queue(),
         PUBSUB_TOPIC_BEACON_ATTESTATION: asyncio.Queue(),
+        PUBSUB_TOPIC_BEACON_AGGREGATE_AND_PROOF: asyncio.Queue(),
     }
+    subnets = set(subnet_id for subnet_id in range(ATTESTATION_SUBNET_COUNT))
+    for subnet_id in range(ATTESTATION_SUBNET_COUNT):
+        topic = (
+            PUBSUB_TOPIC_COMMITTEE_BEACON_ATTESTATION.substitute(subnet_id=subnet_id),
+        )
+        topic_msg_queues[topic] = asyncio.Queue()
     chain = await get_fake_chain()
-    server = ReceiveServerFactory(chain=chain, topic_msg_queues=topic_msg_queues)
+    server = ReceiveServerFactory(
+        chain=chain, topic_msg_queues=topic_msg_queues, subnets=subnets
+    )
     asyncio.ensure_future(server.run())
     await server.ready.wait()
     try:
@@ -103,6 +116,7 @@ async def receive_server_with_mock_process_orphan_blocks_period(
     topic_msg_queues = {
         PUBSUB_TOPIC_BEACON_BLOCK: asyncio.Queue(),
         PUBSUB_TOPIC_BEACON_ATTESTATION: asyncio.Queue(),
+        PUBSUB_TOPIC_BEACON_AGGREGATE_AND_PROOF: asyncio.Queue(),
     }
     chain = await get_fake_chain()
     server = ReceiveServerFactory(chain=chain, topic_msg_queues=topic_msg_queues)
@@ -120,9 +134,9 @@ async def wait_all_messages_processed(queue):
 
 def test_attestation_pool():
     pool = AttestationPool()
-    a1 = Attestation()
-    a2 = Attestation(data=a1.data.copy(beacon_block_root=b"\x55" * 32))
-    a3 = Attestation(data=a1.data.copy(beacon_block_root=b"\x66" * 32))
+    a1 = Attestation.create()
+    a2 = Attestation.create(data=a1.data.set("beacon_block_root", b"\x55" * 32))
+    a3 = Attestation.create(data=a1.data.set("beacon_block_root", b"\x66" * 32))
 
     # test: add
     pool.add(a1)
@@ -285,7 +299,7 @@ async def test_bcc_receive_server_handle_beacon_blocks(receive_server):
 
 @pytest.mark.asyncio
 async def test_bcc_receive_server_handle_beacon_attestations(receive_server):
-    attestation = Attestation()
+    attestation = Attestation.create()
     encoded_attestation = ssz.encode(attestation)
     msg = rpc_pb2.Message(
         from_id=b"my_id",
@@ -294,7 +308,7 @@ async def test_bcc_receive_server_handle_beacon_attestations(receive_server):
         topicIDs=[PUBSUB_TOPIC_BEACON_ATTESTATION],
     )
 
-    assert attestation not in receive_server.attestation_pool
+    assert attestation not in receive_server.unaggregated_attestation_pool
 
     beacon_attestation_queue = receive_server.topic_msg_queues[
         PUBSUB_TOPIC_BEACON_ATTESTATION
@@ -303,11 +317,11 @@ async def test_bcc_receive_server_handle_beacon_attestations(receive_server):
     await beacon_attestation_queue.put(msg)
     await wait_all_messages_processed(beacon_attestation_queue)
     # Check that attestation is put to attestation pool
-    assert attestation in receive_server.attestation_pool
+    assert attestation in receive_server.unaggregated_attestation_pool
 
     # Put the attestation in the next block
     block = get_blocks(receive_server.chain, num_blocks=1)[0]
-    block = block.copy(body=block.body.copy(attestations=[attestation]))
+    block = block.transform(["body", "attestations"], [attestation])
     encoded_block = ssz.encode(block, BeaconBlock)
     msg = rpc_pb2.Message(
         from_id=b"my_id",
@@ -321,7 +335,7 @@ async def test_bcc_receive_server_handle_beacon_attestations(receive_server):
     await beacon_block_queue.put(msg)
     await wait_all_messages_processed(beacon_block_queue)
     # Check that attestation is removed from attestation pool
-    assert attestation not in receive_server.attestation_pool
+    assert attestation not in receive_server.unaggregated_attestation_pool
 
 
 @pytest.mark.asyncio
@@ -341,8 +355,8 @@ async def test_bcc_receive_server_handle_orphan_block_loop(
     # second iteration will request block 3 and import block 3, block 4 and block 5.
     blocks = get_blocks(receive_server.chain, num_blocks=5)
     fork_blocks = (
-        blocks[2].copy(state_root=b"\x01" * 32),
-        blocks[2].copy(state_root=b"\x12" * 32),
+        blocks[2].set("state_root", b"\x01" * 32),
+        blocks[2].set("state_root", b"\x12" * 32),
     )
     mock_peer_1_db = {block.signing_root: block for block in blocks[3:]}
     mock_peer_2_db = {block.signing_root: block for block in blocks[:3]}
@@ -370,6 +384,11 @@ async def test_bcc_receive_server_handle_orphan_block_loop(
         return requested_blocks
 
     with monkeypatch.context() as m:
+        for orphan_block in (blocks[4],) + fork_blocks:
+            receive_server.orphan_block_pool.add(orphan_block)
+        await wait_until_true(
+            lambda: len(receive_server.orphan_block_pool) != 0, timeout=4
+        )
         for peer in (peer1, peer2):
             receive_server.p2p_node.handshaked_peers.add(peer)
         m.setattr(
@@ -377,12 +396,9 @@ async def test_bcc_receive_server_handle_orphan_block_loop(
             "request_beacon_blocks_by_root",
             request_beacon_blocks_by_root,
         )
-
-        for orphan_block in (blocks[4],) + fork_blocks:
-            receive_server.orphan_block_pool.add(orphan_block)
         # Wait for receive server to process the orphan blocks
         await wait_until_true(
-            lambda: len(receive_server.orphan_block_pool) == 0, timeout=2
+            lambda: len(receive_server.orphan_block_pool) == 0, timeout=4
         )
         # Check that both peers were requested for blocks
         assert peer_1_called_event.is_set()
@@ -395,7 +411,7 @@ async def test_bcc_receive_server_handle_orphan_block_loop(
 @pytest.mark.asyncio
 async def test_bcc_receive_server_get_ready_attestations(receive_server, monkeypatch):
     class MockState:
-        slot = XIAO_LONG_BAO_CONFIG.GENESIS_SLOT
+        slot = MINIMAL_SERENITY_CONFIG.GENESIS_SLOT
 
     state = MockState()
 
@@ -404,36 +420,48 @@ async def test_bcc_receive_server_get_ready_attestations(receive_server, monkeyp
 
     monkeypatch.setattr(receive_server.chain, "get_head_state", mock_get_head_state)
 
-    attesting_slot = XIAO_LONG_BAO_CONFIG.GENESIS_SLOT
-    a1 = Attestation(data=AttestationData(slot=attesting_slot))
-    a2 = Attestation(signature=b"\x56" * 96, data=AttestationData(slot=attesting_slot))
-    a3 = Attestation(
-        signature=b"\x78" * 96, data=AttestationData(slot=attesting_slot + 1)
+    attesting_slot = MINIMAL_SERENITY_CONFIG.GENESIS_SLOT
+    a1 = Attestation.create(data=AttestationData.create(slot=attesting_slot))
+    a2 = Attestation.create(
+        signature=b"\x56" * 96, data=AttestationData.create(slot=attesting_slot)
     )
-    receive_server.attestation_pool.batch_add([a1, a2, a3])
+    a3 = Attestation.create(
+        signature=b"\x78" * 96, data=AttestationData.create(slot=attesting_slot + 1)
+    )
+    receive_server.unaggregated_attestation_pool.batch_add([a1, a2, a3])
 
     # Workaround: add a fake head state slot
     # so `get_state_machine` won't trigger `HeadStateSlotNotFound` exception
     receive_server.chain.chaindb._add_head_state_slot_lookup(
-        XIAO_LONG_BAO_CONFIG.GENESIS_SLOT
+        MINIMAL_SERENITY_CONFIG.GENESIS_SLOT
     )
 
     state.slot = (
-        attesting_slot + XIAO_LONG_BAO_CONFIG.MIN_ATTESTATION_INCLUSION_DELAY - 1
+        attesting_slot + MINIMAL_SERENITY_CONFIG.MIN_ATTESTATION_INCLUSION_DELAY - 1
     )
-    ready_attestations = receive_server.get_ready_attestations(state.slot)
+    ready_attestations = receive_server.get_ready_attestations(
+        state.slot, is_aggregated=False
+    )
     assert len(ready_attestations) == 0
 
-    state.slot = attesting_slot + XIAO_LONG_BAO_CONFIG.MIN_ATTESTATION_INCLUSION_DELAY
-    ready_attestations = receive_server.get_ready_attestations(state.slot)
+    state.slot = (
+        attesting_slot + MINIMAL_SERENITY_CONFIG.MIN_ATTESTATION_INCLUSION_DELAY
+    )
+    ready_attestations = receive_server.get_ready_attestations(
+        state.slot, is_aggregated=False
+    )
     assert set([a1, a2]) == set(ready_attestations)
 
     state.slot = (
-        attesting_slot + XIAO_LONG_BAO_CONFIG.MIN_ATTESTATION_INCLUSION_DELAY + 1
+        attesting_slot + MINIMAL_SERENITY_CONFIG.MIN_ATTESTATION_INCLUSION_DELAY + 1
     )
-    ready_attestations = receive_server.get_ready_attestations(state.slot)
+    ready_attestations = receive_server.get_ready_attestations(
+        state.slot, is_aggregated=False
+    )
     assert set([a1, a2, a3]) == set(ready_attestations)
 
-    state.slot = attesting_slot + XIAO_LONG_BAO_CONFIG.SLOTS_PER_EPOCH + 1
-    ready_attestations = receive_server.get_ready_attestations(state.slot)
+    state.slot = attesting_slot + MINIMAL_SERENITY_CONFIG.SLOTS_PER_EPOCH + 1
+    ready_attestations = receive_server.get_ready_attestations(
+        state.slot, is_aggregated=False
+    )
     assert set([a3]) == set(ready_attestations)

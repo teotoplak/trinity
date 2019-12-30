@@ -13,14 +13,12 @@ from eth_keys import keys
 from eth_utils import (
     big_endian_to_int,
     int_to_big_endian,
-    keccak,
 )
 from eth_utils.toolz import (
     merge,
     reduce,
 )
 
-from p2p.discovery import DiscoveryProtocol
 from p2p.discv5.packets import (
     AuthHeader,
     AuthHeaderPacket,
@@ -63,37 +61,6 @@ from p2p.discv5.routing_table import (
 from p2p.discv5.typing import (
     NodeID,
 )
-from p2p.ecies import generate_privkey
-
-from .cancel_token import CancelTokenFactory
-from .kademlia import AddressFactory
-from ...aurora.aurora_dicovery_protocol import AuroraDiscoveryProtocol
-
-
-class DiscoveryProtocolFactory(factory.Factory):
-    class Meta:
-        model = DiscoveryProtocol
-
-    privkey = factory.LazyFunction(generate_privkey)
-    address = factory.SubFactory(AddressFactory)
-    bootstrap_nodes = factory.LazyFunction(tuple)
-
-    cancel_token = factory.SubFactory(CancelTokenFactory, name='discovery-test')
-
-    @classmethod
-    def from_seed(cls, seed: bytes, *args: Any, **kwargs: Any) -> DiscoveryProtocol:
-        privkey = keys.PrivateKey(keccak(seed))
-        return cls(*args, privkey=privkey, **kwargs)
-
-
-class AuroraDiscoveryProtocolFactory(DiscoveryProtocolFactory):
-    class Meta:
-        model = AuroraDiscoveryProtocol
-
-    @classmethod
-    def from_seed(cls, seed: bytes, *args: Any, **kwargs: Any) -> AuroraDiscoveryProtocol:
-        privkey = keys.PrivateKey(keccak(seed))
-        return cls(*args, privkey=privkey, **kwargs)
 
 
 class AuthTagPacketFactory(factory.Factory):

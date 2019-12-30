@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import (
     AsyncIterator,
     Iterable,
@@ -34,6 +35,7 @@ from trinity.db.eth1.header import BaseAsyncHeaderDB
 from trinity.protocol.eth.peer import ETHPeerPool
 from trinity.protocol.eth.sync import ETHHeaderChainSyncer
 from trinity.sync.beam.constants import (
+    ESTIMATED_BEAMABLE_SECONDS,
     FULL_BLOCKS_NEEDED_TO_START_BEAM,
 )
 from trinity.sync.common.checkpoint import (
@@ -189,7 +191,7 @@ class BeamSyncer(BaseService):
                 "Timed out while trying to fulfill prerequisites of "
                 f"sync launch strategy: {exc} from {self._launch_strategy}"
             )
-            await self.cancel()
+            self.cancel_nowait()
 
         self.run_daemon(self._header_syncer)
 
@@ -211,7 +213,7 @@ class BeamSyncer(BaseService):
         final_headers = self._header_persister.get_final_headers()
 
         # First, download block bodies for previous 6 blocks, for validation
-        await self._download_blocks(final_headers[0])
+        await self.wait(self._download_blocks(final_headers[0]))
 
         # Now let the beam sync importer kick in
         self._checkpoint_header_syncer.set_checkpoint_headers(final_headers)
@@ -400,9 +402,23 @@ class HeaderOnlyPersist(BaseService):
         self._launch_strategy = launch_strategy
 
     async def _run(self) -> None:
-        self.run_daemon_task(self._persist_headers())
+        self.run_daemon_task(self._persist_headers_if_tip_too_old())
         # run sync until cancelled
         await self.cancellation()
+
+    def _is_header_eligible_to_beam_sync(self, header: BlockHeader) -> bool:
+        time_gap = time.time() - header.timestamp
+        return time_gap < ESTIMATED_BEAMABLE_SECONDS
+
+    async def _persist_headers_if_tip_too_old(self) -> None:
+        tip = await self._db.coro_get_canonical_head()
+        if self._is_header_eligible_to_beam_sync(tip):
+            self._force_end_block_number = tip.block_number + 1
+            self.logger.info("Tip is recent enough, syncing from last synced header at %s", tip)
+        else:
+            self.logger.warning("Tip %s is too far behind to Beam Sync, skipping ahead...", tip)
+
+        await self.wait(self._persist_headers())
 
     async def _persist_headers(self) -> None:
         async for headers in self._header_syncer.new_sync_headers(HEADER_QUEUE_SIZE_TARGET):
@@ -500,7 +516,7 @@ class HeaderOnlyPersist(BaseService):
             self.logger.debug("Final header import before checkpoint: None")
 
         self._final_headers = final_headers
-        self.cancel_nowait()
+        await self.cancel()
 
         return True
 
@@ -624,12 +640,12 @@ class BeamBlockImporter(BaseBlockImporter, BaseService):
         """
 
         address_timer = Timer()
-        num_accounts, new_account_nodes = await self._request_address_nodes(
+        num_accounts, new_account_nodes = await self.wait(self._request_address_nodes(
             header,
             parent_state_root,
             transactions,
             urgent,
-        )
+        ))
         collection_time = address_timer.elapsed
 
         self.logger.debug(

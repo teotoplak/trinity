@@ -32,19 +32,21 @@ def test_canonical_chain(valid_chain, genesis_slot, fork_choice_scoring):
     # the canonical chain.
     assert valid_chain.get_canonical_head() == genesis_block
     # verify a special case (score(genesis) == 0)
-    assert valid_chain.get_score(genesis_block.signing_root) == 0
+    assert valid_chain.get_score(
+        genesis_block.signing_root
+    ) == fork_choice_scoring.score(genesis_block)
 
-    block = genesis_block.copy(
-        slot=genesis_block.slot + 1, parent_root=genesis_block.signing_root
+    block = genesis_block.mset(
+        "slot", genesis_block.slot + 1, "parent_root", genesis_block.signing_root
     )
     valid_chain.chaindb.persist_block(block, block.__class__, fork_choice_scoring)
 
     assert valid_chain.get_canonical_head() == block
     state_machine = valid_chain.get_state_machine(block.slot)
-    scoring_fn = state_machine.get_fork_choice_scoring()
+    scoring = state_machine.get_fork_choice_scoring()
 
-    assert valid_chain.get_score(block.signing_root) == scoring_fn(block)
-    assert scoring_fn(block) != 0
+    assert valid_chain.get_score(block.signing_root) == scoring.score(block)
+    assert scoring.score(block) != 0
 
     canonical_block_1 = valid_chain.get_canonical_block_by_slot(genesis_block.slot + 1)
     assert canonical_block_1 == block
@@ -198,7 +200,7 @@ def test_get_attestation_root(
     a0 = attestations[0]
     assert valid_chain.get_attestation_by_root(a0.hash_tree_root) == a0
     assert valid_chain.attestation_exists(a0.hash_tree_root)
-    fake_attestation = a0.copy(signature=b"\x78" * 96)
+    fake_attestation = a0.set("signature", b"\x78" * 96)
     with pytest.raises(AttestationRootNotFound):
         valid_chain.get_attestation_by_root(fake_attestation.hash_tree_root)
     assert not valid_chain.attestation_exists(fake_attestation.hash_tree_root)

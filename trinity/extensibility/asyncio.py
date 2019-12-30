@@ -1,45 +1,82 @@
+from abc import abstractmethod
 import asyncio
+import logging
+import signal
+from typing import Optional
 
-from lahja import AsyncioEndpoint
+from asyncio_run_in_process import open_in_process
+from asyncio_run_in_process.typing import SubprocessKwargs
+from lahja import EndpointAPI
 
-from trinity.extensibility.events import ComponentStartedEvent
+from p2p.service import run_service
+
+from trinity._utils.logging import child_process_logging
+from trinity._utils.profiling import profiler
+from trinity.boot_info import BootInfo
 
 from .component import BaseIsolatedComponent
+from .event_bus import AsyncioEventBusService
+
+
+logger = logging.getLogger('trinity.extensibility.asyncio.AsyncioIsolatedComponent')
 
 
 class AsyncioIsolatedComponent(BaseIsolatedComponent):
-    _event_bus: AsyncioEndpoint = None
-    _loop: asyncio.AbstractEventLoop
+    def get_subprocess_kwargs(self) -> Optional[SubprocessKwargs]:
+        # Note that this method currently only exist to facilitate testing.
+        return None
 
-    @property
-    def event_bus(self) -> AsyncioEndpoint:
-        if self._event_bus is None:
-            raise AttributeError("Event bus is not available yet")
-        return self._event_bus
-
-    def _spawn_start(self) -> None:
-        self._setup_logging()
-
-        with self.boot_info.trinity_config.process_id_file(self.normalized_name):
-            self._loop = asyncio.get_event_loop()
-            asyncio.ensure_future(self._prepare_start())
-            self._loop.run_forever()
-            self._loop.close()
-
-    async def _prepare_start(self) -> None:
-        # prevent circular import
-        from trinity.event_bus import AsyncioEventBusService
-
-        self._event_bus_service = AsyncioEventBusService(
-            self.boot_info.trinity_config,
-            self.normalized_name,
+    async def run(self) -> None:
+        proc_ctx = open_in_process(
+            self._do_run,
+            self._boot_info,
+            subprocess_kwargs=self.get_subprocess_kwargs(),
         )
-        asyncio.ensure_future(self._event_bus_service.run())
-        await self._event_bus_service.wait_event_bus_available()
-        self._event_bus = self._event_bus_service.get_event_bus()
+        async with proc_ctx as proc:
+            try:
+                await proc.wait()
+            except asyncio.CancelledError as err:
+                logger.debug('Component %s exiting. Sending SIGINT to pid=%d', self, proc.pid)
+                proc.send_signal(signal.SIGINT)
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    logger.debug(
+                        'Component %s running in process pid=%d timed out '
+                        'during shutdown. Sending SIGTERM and exiting.',
+                        self,
+                        proc.pid,
+                    )
+                    proc.send_signal(signal.SIGTERM)
+                    pass
+                finally:
+                    raise err
 
-        await self.event_bus.broadcast(
-            ComponentStartedEvent(type(self))
-        )
+    @classmethod
+    async def _do_run(cls, boot_info: BootInfo) -> None:
+        with child_process_logging(boot_info):
+            endpoint_name = cls._get_endpoint_name()
+            event_bus_service = AsyncioEventBusService(
+                boot_info.trinity_config,
+                endpoint_name,
+            )
+            async with run_service(event_bus_service):
+                await event_bus_service.wait_event_bus_available()
+                event_bus = event_bus_service.get_event_bus()
 
-        self.do_start()
+                try:
+                    if boot_info.profile:
+                        with profiler(f'profile_{cls._get_endpoint_name}'):
+                            await cls.do_run(boot_info, event_bus)
+                    else:
+                        await cls.do_run(boot_info, event_bus)
+                except KeyboardInterrupt:
+                    return
+
+    @classmethod
+    @abstractmethod
+    async def do_run(self, boot_info: BootInfo, event_bus: EndpointAPI) -> None:
+        """
+        Define the entry point of the component. Should be overwritten in subclasses.
+        """
+        ...

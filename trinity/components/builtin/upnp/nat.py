@@ -1,7 +1,5 @@
 import asyncio
-from concurrent.futures import (
-    ThreadPoolExecutor,
-)
+from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 from typing import (
     AsyncGenerator,
@@ -9,15 +7,13 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-from cancel_token import (
-    CancelToken,
-    OperationCancelled,
-)
+from async_service import Service
+from eth_utils import get_extended_debug_logger
+
 from p2p.exceptions import (
     NoInternalAddressMatchesDevice,
 )
 import netifaces
-from p2p.service import BaseService
 
 from eth._warnings import catch_and_ignore_import_warning
 with catch_and_ignore_import_warning():
@@ -52,36 +48,37 @@ def find_internal_ip_on_device_network(upnp_dev: upnpclient.upnp.Device) -> str:
     raise NoInternalAddressMatchesDevice(device_hostname=parsed_url.hostname)
 
 
-class UPnPService(BaseService):
+class UPnPService(Service):
     """
     Generate a mapping of external network IP address/port to internal IP address/port,
     using the Universal Plug 'n' Play standard.
     """
+    logger = get_extended_debug_logger('trinity.components.upnp.UPnPService')
 
     _nat_portmap_lifetime = 30 * 60
 
-    def __init__(self, port: int, token: CancelToken = None) -> None:
+    def __init__(self, port: int) -> None:
         """
         :param port: The port that a server wants to bind to on this machine, and
         make publicly accessible.
         """
-        super().__init__(token)
         self.port = port
         self._mapping: PortMapping = None  # when called externally, this never returns None
 
-    async def _run(self) -> None:
+    async def run(self) -> None:
         """Run an infinite loop refreshing our NAT port mapping.
 
         On every iteration we configure the port mapping with a lifetime of 30 minutes and then
         sleep for that long as well.
         """
-        while self.is_operational:
+        while self.manager.is_running:
             try:
                 await self.add_nat_portmap()
                 # Wait for the port mapping lifetime, and then try registering it again
-                await self.wait(asyncio.sleep(self._nat_portmap_lifetime))
-            except OperationCancelled:
-                break
+                await asyncio.sleep(self._nat_portmap_lifetime)
+            except asyncio.CancelledError:
+                # Re-raise to prevent it being logged as an unexpected exception.
+                raise
             except Exception:
                 self.logger.exception("Failed to setup NAT portmap")
 
@@ -133,21 +130,30 @@ class UPnPService(BaseService):
 
         external_ip = upnp_dev.WANIPConn1.GetExternalIPAddress()['NewExternalIPAddress']
         for protocol, description in [('TCP', 'ethereum p2p'), ('UDP', 'ethereum discovery')]:
-            upnp_dev.WANIPConn1.AddPortMapping(
-                NewRemoteHost=external_ip,
-                NewExternalPort=self.port,
-                NewProtocol=protocol,
-                NewInternalPort=self.port,
-                NewInternalClient=internal_ip,
-                NewEnabled='1',
-                NewPortMappingDescription=description,
-                NewLeaseDuration=self._nat_portmap_lifetime,
-            )
-        self._mapping = PortMapping(
-            '%s:%d' % (internal_ip, self.port),
-            '%s:%d' % (external_ip, self.port),
-        )
-        self.logger.info("NAT port forwarding successfully set up: %r", self._mapping)
+            try:
+                upnp_dev.WANIPConn1.AddPortMapping(
+                    NewRemoteHost=external_ip,
+                    NewExternalPort=self.port,
+                    NewProtocol=protocol,
+                    NewInternalPort=self.port,
+                    NewInternalClient=internal_ip,
+                    NewEnabled='1',
+                    NewPortMappingDescription=description,
+                    NewLeaseDuration=self._nat_portmap_lifetime,
+                )
+            except upnpclient.soap.SOAPError as exc:
+                self.logger.warning(
+                    "Failed to setup port mapping for %s/%s: %s",
+                    protocol,
+                    description,
+                    exc
+                )
+            else:
+                self._mapping = PortMapping(
+                    '%s:%d' % (internal_ip, self.port),
+                    '%s:%d' % (external_ip, self.port),
+                )
+                self.logger.info("NAT port forwarding successfully set up: %r", self._mapping)
         return external_ip
 
     async def _discover_upnp_devices(self) -> AsyncGenerator[upnpclient.upnp.Device, None]:
@@ -155,16 +161,17 @@ class UPnPService(BaseService):
         # Use loop.run_in_executor() because upnpclient.discover() is blocking and may take a
         # while to complete. We must use a ThreadPoolExecutor() because the
         # response from upnpclient.discover() can't be pickled.
-        try:
-            devices = await self.wait(
-                loop.run_in_executor(ThreadPoolExecutor(max_workers=1), upnpclient.discover),
-                timeout=UPNP_DISCOVER_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            self.logger.info("Timeout waiting for UPNP-enabled devices")
-            return
-        else:
-            self.logger.debug("Found %d candidate NAT devices", len(devices))
+        with ThreadPoolExecutor() as executor:
+            try:
+                devices = await asyncio.wait_for(
+                    loop.run_in_executor(executor, upnpclient.discover),
+                    timeout=UPNP_DISCOVER_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                self.logger.info("Timeout waiting for UPNP-enabled devices")
+                return
+            else:
+                self.logger.debug("Found %d candidate NAT devices", len(devices))
 
         # If there are no UPNP devices we can exit early
         if not devices:

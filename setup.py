@@ -1,16 +1,18 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# temporary comment
 import os
 import re
 from setuptools import setup, find_packages
 
-PYEVM_DEPENDENCY = "py-evm==0.3.0a8"
+PYEVM_DEPENDENCY = "py-evm==0.3.0a12"
 
 
 deps = {
     'p2p': [
         "async-exit-stack==1.0.1",
         "async-generator==1.10",
+        "async-service==0.1.0a4",
         "asyncio-cancel-token>=0.2,<0.3",
         "async_lru>=0.1.0,<1.0.0",
         "cached-property>=1.5.1,<2",
@@ -22,33 +24,35 @@ deps = {
         "pysha3>=1.0.0,<2.0.0",
         "python-snappy>=0.5.3",
         "SQLAlchemy>=1.3.3,<2",
-        'trio==0.13.0,<0.14',
-        'trio-typing>=0.2.0,<0.3',
+        'trio>=0.13.0,<0.14',
+        'trio-typing>=0.3.0,<0.4',
         "upnpclient>=0.0.8,<1",
     ],
     'trinity': [
         "aiohttp==3.6.0",
+        "asyncio-run-in-process==0.1.0a4",
         "bloom-filter==1.3",
         "cachetools>=3.1.0,<4.0.0",
         "coincurve>=10.0.0,<11.0.0",
         "dataclasses>=0.6, <1;python_version<'3.7'",
-        "eth-utils>=1.8.1,<2",
-        "ipython>=7.8.0,<8.0.0",
+        "eth-utils>=1.8.4,<2",
+        "ipython>=7.8.0,<7.10.0",  # attach fails with v7.10.{0,1}
         "plyvel==1.1.0",
         PYEVM_DEPENDENCY,
-        "web3==4.4.1",
-        "lahja>=0.14.6,<0.15.0",
+        "web3==5.4.0",
+        "lahja>=0.15.2,<0.16",
         "termcolor>=1.1.0,<2.0.0",
-        "uvloop==0.11.2;platform_system=='Linux' or platform_system=='Darwin' or platform_system=='FreeBSD'",  # noqa: E501
-        "websockets==5.0.1",
+        "uvloop==0.14.0;platform_system=='Linux' or platform_system=='Darwin' or platform_system=='FreeBSD'",  # noqa: E501
+        "websockets>=8.1.0",
         "jsonschema==3.0.1",
         "mypy-extensions>=0.4.3,<0.5.0",
-        "typing_extensions>=3.7.2,<4.0.0",
+        "typing_extensions>=3.7.4,<4.0.0",
         "ruamel.yaml==0.15.98",
         "argcomplete>=1.10.0,<2",
         "multiaddr>=0.0.8,<0.1.0",
+        "prometheus-client==0.7.1",
         "pymultihash>=0.8.2",
-        "libp2p==0.1.1",
+        "libp2p==0.1.4",
         "numpy",
         "scipy"
     ],
@@ -84,7 +88,7 @@ deps = {
     'lint': [
         "flake8==3.7.9",
         "flake8-bugbear==19.8.0",
-        "mypy==0.730",
+        "mypy==0.740",
         "sqlalchemy-stubs==0.1",
     ],
     'doc': [
@@ -114,7 +118,7 @@ deps = {
         "py-ecc==1.7.1",
         "rlp>=1.1.0,<2.0.0",
         PYEVM_DEPENDENCY,
-        "ssz==0.1.5",
+        "ssz==0.2.2",
     ],
     'eth2-extra': [
         "milagro-bls-binding==0.1.3",
@@ -124,7 +128,7 @@ deps = {
         "isort==4.3.21",
         "flake8==3.7.9",
         "flake8-bugbear==19.8.0",
-        "mypy==0.730",
+        "mypy==0.740",
     ],
 }
 
@@ -174,7 +178,7 @@ with open('./README.md') as readme:
 setup(
     name='trinity',
     # *IMPORTANT*: Don't manually change the version here. Use the 'bumpversion' utility.
-    version='0.1.0-alpha.30',
+    version='0.1.0-alpha.34',
     description='The Trinity client for the Ethereum network',
     long_description=long_description,
     long_description_content_type='text/markdown',

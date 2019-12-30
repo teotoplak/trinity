@@ -8,15 +8,22 @@ from eth.exceptions import BlockNotFound
 from eth.validation import validate_word
 from eth_utils import ValidationError, humanize_hash
 
-from eth2._utils.funcs import constantly
 from eth2._utils.ssz import validate_imported_block_unchanged
 from eth2.beacon.db.chain import BaseBeaconChainDB, BeaconChainDB
 from eth2.beacon.exceptions import BlockClassError, StateMachineNotFound
-from eth2.beacon.operations.attestation_pool import AttestationPool
+from eth2.beacon.fork_choice.constant import ConstantScoring
+from eth2.beacon.fork_choice.scoring import BaseScore
 from eth2.beacon.types.attestations import Attestation
 from eth2.beacon.types.blocks import BaseBeaconBlock
+from eth2.beacon.types.nonspec.epoch_info import EpochInfo
 from eth2.beacon.types.states import BeaconState
-from eth2.beacon.typing import FromBlockParams, HashTreeRoot, SigningRoot, Slot
+from eth2.beacon.typing import (
+    FromBlockParams,
+    HashTreeRoot,
+    SigningRoot,
+    Slot,
+    Timestamp,
+)
 from eth2.configs import Eth2Config, Eth2GenesisConfig
 
 if TYPE_CHECKING:
@@ -37,10 +44,7 @@ class BaseBeaconChain(Configurable, ABC):
 
     @abstractmethod
     def __init__(
-        self,
-        base_db: AtomicDatabaseAPI,
-        attestation_pool: AttestationPool,
-        genesis_config: Eth2GenesisConfig,
+        self, base_db: AtomicDatabaseAPI, genesis_config: Eth2GenesisConfig
     ) -> None:
         ...
 
@@ -92,11 +96,35 @@ class BaseBeaconChain(Configurable, ABC):
     def get_genesis_state_machine_class(self) -> Type["BaseBeaconStateMachine"]:
         ...
 
+    @abstractmethod
+    def on_tick(self, time: Timestamp, slot: Slot = None) -> None:
+        ...
+
+    @abstractmethod
+    def on_block(self, block: BaseBeaconBlock, slot: Slot = None) -> None:
+        ...
+
+    @abstractmethod
+    def on_attestation(self, attestation: Attestation, slot: Slot = None) -> None:
+        ...
+
     #
     # State API
     #
     @abstractmethod
     def get_state_by_slot(self, slot: Slot) -> BeaconState:
+        ...
+
+    @abstractmethod
+    def get_head_state_slot(self) -> Slot:
+        ...
+
+    @abstractmethod
+    def get_head_state(self) -> BeaconState:
+        ...
+
+    @abstractmethod
+    def get_canonical_epoch_info(self) -> EpochInfo:
         ...
 
     #
@@ -125,7 +153,7 @@ class BaseBeaconChain(Configurable, ABC):
         ...
 
     @abstractmethod
-    def get_score(self, block_root: SigningRoot) -> int:
+    def get_score(self, block_root: SigningRoot) -> BaseScore:
         ...
 
     @abstractmethod
@@ -134,10 +162,6 @@ class BaseBeaconChain(Configurable, ABC):
 
     @abstractmethod
     def get_canonical_block_root(self, slot: Slot) -> SigningRoot:
-        ...
-
-    @abstractmethod
-    def get_head_state(self) -> BeaconState:
         ...
 
     @abstractmethod
@@ -173,10 +197,7 @@ class BeaconChain(BaseBeaconChain):
     chaindb_class = BeaconChainDB  # type: Type[BaseBeaconChainDB]
 
     def __init__(
-        self,
-        base_db: AtomicDatabaseAPI,
-        attestation_pool: AttestationPool,
-        genesis_config: Eth2GenesisConfig,
+        self, base_db: AtomicDatabaseAPI, genesis_config: Eth2GenesisConfig
     ) -> None:
         if not self.sm_configuration:
             raise ValueError(
@@ -188,7 +209,6 @@ class BeaconChain(BaseBeaconChain):
             pass
 
         self.chaindb = self.get_chaindb_class()(base_db, genesis_config)
-        self.attestation_pool = attestation_pool
 
     #
     # Helpers
@@ -214,7 +234,7 @@ class BeaconChain(BaseBeaconChain):
         genesis_config: Eth2GenesisConfig,
     ) -> "BaseBeaconChain":
         """
-        Initialize the ``BeaconChain`` from a genesis state.
+        Initialize the ``BeaconChain`` from a genesis state and block.
         """
         sm_class = cls.get_state_machine_class_for_block_slot(genesis_block.slot)
         if type(genesis_block) != sm_class.block_class:
@@ -226,26 +246,14 @@ class BeaconChain(BaseBeaconChain):
 
         chaindb = cls.get_chaindb_class()(db=base_db, genesis_config=genesis_config)
         chaindb.persist_state(genesis_state)
-        attestation_pool = AttestationPool()
-        return cls._from_genesis_block(
-            base_db, attestation_pool, genesis_block, genesis_config
-        )
 
-    @classmethod
-    def _from_genesis_block(
-        cls,
-        base_db: AtomicDatabaseAPI,
-        attestation_pool: AttestationPool,
-        genesis_block: BaseBeaconBlock,
-        genesis_config: Eth2GenesisConfig,
-    ) -> "BaseBeaconChain":
-        """
-        Initialize the ``BeaconChain`` from the genesis block.
-        """
-        chaindb = cls.get_chaindb_class()(db=base_db, genesis_config=genesis_config)
-        genesis_scoring = constantly(0)
+        genesis_scoring_class = sm_class.get_fork_choice_scoring_class()
+        genesis_score_class = genesis_scoring_class.get_score_class()
+        genesis_score = genesis_score_class.from_genesis(genesis_state, genesis_block)
+        genesis_scoring = ConstantScoring(genesis_score)
         chaindb.persist_block(genesis_block, genesis_block.__class__, genesis_scoring)
-        return cls(base_db, attestation_pool, genesis_config)
+
+        return cls(base_db, genesis_config)
 
     #
     # StateMachine API
@@ -288,11 +296,24 @@ class BeaconChain(BaseBeaconChain):
             slot = at_slot
         sm_class = self.get_state_machine_class_for_block_slot(slot)
 
-        return sm_class(chaindb=self.chaindb, attestation_pool=self.attestation_pool)
+        return sm_class(chaindb=self.chaindb)
 
     @classmethod
     def get_genesis_state_machine_class(cls) -> Type["BaseBeaconStateMachine"]:
         return cls.sm_configuration[0][1]
+
+    # TODO how to handle the current slot in fork choice handlers
+    def on_tick(self, time: Timestamp, slot: Slot = None) -> None:
+        state_machine = self.get_state_machine(at_slot=slot)
+        state_machine.on_tick(time)
+
+    def on_block(self, block: BaseBeaconBlock, slot: Slot = None) -> None:
+        state_machine = self.get_state_machine(at_slot=slot)
+        state_machine.on_block(block)
+
+    def on_attestation(self, attestation: Attestation, slot: Slot = None) -> None:
+        state_machine = self.get_state_machine(at_slot=slot)
+        state_machine.on_attestation(attestation)
 
     #
     # State API
@@ -307,6 +328,16 @@ class BeaconChain(BaseBeaconChain):
         state_class = sm_class.get_state_class()
         state_root = self.chaindb.get_state_root_by_slot(slot)
         return self.chaindb.get_state_by_root(state_root, state_class)
+
+    def get_head_state_slot(self) -> Slot:
+        return self.chaindb.get_head_state_slot()
+
+    def get_head_state(self) -> BeaconState:
+        head_state_slot = self.chaindb.get_head_state_slot()
+        return self.get_state_by_slot(head_state_slot)
+
+    def get_canonical_epoch_info(self) -> EpochInfo:
+        return self.chaindb.get_canonical_epoch_info()
 
     #
     # Block API
@@ -356,13 +387,17 @@ class BeaconChain(BaseBeaconChain):
         block_class = self.get_block_class(block_root)
         return self.chaindb.get_block_by_root(block_root, block_class)
 
-    def get_score(self, block_root: SigningRoot) -> int:
+    def get_score(self, block_root: SigningRoot) -> BaseScore:
         """
         Return the score of the block with the given hash.
 
         Raise ``BlockNotFound`` if there is no matching black hash.
         """
-        return self.chaindb.get_score(block_root)
+        block = self.get_block_by_root(block_root)
+        slot = block.slot
+        state_machine = self.get_state_machine(at_slot=slot)
+        fork_choice_scoring = state_machine.get_fork_choice_scoring()
+        return self.chaindb.get_score(block_root, fork_choice_scoring.get_score_class())
 
     def get_canonical_block_by_slot(self, slot: Slot) -> BaseBeaconBlock:
         """
@@ -381,10 +416,6 @@ class BeaconChain(BaseBeaconChain):
         canonical chain.
         """
         return self.chaindb.get_canonical_block_root(slot)
-
-    def get_head_state(self) -> BeaconState:
-        head_state_slot = self.chaindb.get_head_state_slot()
-        return self.get_state_by_slot(head_state_slot)
 
     def import_block(
         self, block: BaseBeaconBlock, perform_validation: bool = True
@@ -410,7 +441,9 @@ class BeaconChain(BaseBeaconChain):
             raise ValidationError(
                 "Attempt to import block #{}.  Cannot import block {} before importing "
                 "its parent block at {}".format(
-                    block.slot, block.signing_root, block.parent_root
+                    block.slot,
+                    humanize_hash(block.signing_root),
+                    humanize_hash(block.parent_root),
                 )
             )
 

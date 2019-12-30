@@ -1,10 +1,14 @@
-import pytest
-
 from eth2.beacon.state_machines.forks.serenity import SerenityStateMachine
-from eth2.beacon.state_machines.forks.xiao_long_bao import XiaoLongBaoStateMachine
+from eth2.beacon.state_machines.forks.skeleton_lake import SkeletonLakeStateMachine
 
 
-@pytest.mark.parametrize("sm_klass", (SerenityStateMachine, XiaoLongBaoStateMachine))
-def test_sm_class_well_defined(sm_klass):
-    state_machine = sm_klass(chaindb=None, attestation_pool=None)
+def test_serenity_state_machine_class_well_defined(genesis_fork_choice_context):
+    state_machine = SerenityStateMachine(
+        chaindb=None, fork_choice_context=genesis_fork_choice_context
+    )
+    assert state_machine.get_block_class()
+
+
+def test_skeleton_lake_state_machine_class_well_defined():
+    state_machine = SkeletonLakeStateMachine(chaindb=None)
     assert state_machine.get_block_class()

@@ -85,6 +85,11 @@ class ETHPeer(BaseChainPeer):
     def eth_api(self) -> ETHAPI:
         return self.connection.get_logic(ETHAPI.name, ETHAPI)
 
+    def get_extra_stats(self) -> Tuple[str, ...]:
+        basic_stats = super().get_extra_stats()
+        eth_stats = self.eth_api.get_extra_stats()
+        return basic_stats + eth_stats
+
 
 class ETHProxyPeer(BaseProxyPeer):
     """
@@ -138,7 +143,7 @@ class ETHPeerFactory(BaseChainPeerFactory):
         )
 
 
-async_fire_and_forget = async_suppress_exceptions(PeerConnectionLost, asyncio.TimeoutError)  # type: ignore  # noqa: E501
+async_fire_and_forget = async_suppress_exceptions(PeerConnectionLost, asyncio.TimeoutError)
 
 
 class ETHPeerPoolEventServer(PeerPoolEventServer[ETHPeer]):

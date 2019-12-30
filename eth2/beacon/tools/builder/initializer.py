@@ -1,7 +1,8 @@
-from typing import Dict, Sequence, Tuple, Type
+from typing import Any, Dict, Sequence, Tuple, Type
 
 from eth.constants import ZERO_HASH32
 from eth_typing import BLSPubkey, Hash32
+from eth_utils import decode_hex
 from py_ecc.optimized_bls12_381.optimized_curve import (
     curve_order as BLS12_381_CURVE_ORDER,
 )
@@ -30,6 +31,27 @@ def generate_privkey_from_index(index: int) -> int:
         )
         % BLS12_381_CURVE_ORDER
     )
+
+
+def create_keypair_and_mock_withdraw_credentials(
+    config: Eth2Config, key_set: Sequence[Dict[str, Any]]
+) -> Tuple[Tuple[BLSPubkey, ...], Tuple[int, ...], Tuple[Hash32, ...]]:
+    pubkeys: Tuple[BLSPubkey, ...] = ()
+    privkeys: Tuple[int, ...] = ()
+    withdrawal_credentials: Tuple[Hash32, ...] = ()
+    for key_pair in key_set:
+        pubkey = BLSPubkey(decode_hex(key_pair["pubkey"]))
+        privkey = int.from_bytes(decode_hex(key_pair["privkey"]), "big")
+        withdrawal_credential = Hash32(
+            config.BLS_WITHDRAWAL_PREFIX.to_bytes(1, byteorder="big")
+            + hash_eth2(pubkey)[1:]
+        )
+
+        pubkeys += (pubkey,)
+        privkeys += (privkey,)
+        withdrawal_credentials += (withdrawal_credential,)
+
+    return (pubkeys, privkeys, withdrawal_credentials)
 
 
 def create_mock_deposits_and_root(
@@ -74,7 +96,7 @@ def create_mock_deposits_and_root(
         tree, root = make_deposit_tree_and_root(deposit_datas_at_count)
         proof = make_deposit_proof(deposit_datas_at_count, tree, root, index)
 
-        deposit = Deposit(proof=proof, data=data)
+        deposit = Deposit.create(proof=proof, data=data)
         deposits += (deposit,)
 
     if len(deposit_datas) > 0:
@@ -102,12 +124,14 @@ def create_mock_deposit(
     assert len(deposits) == 1
     deposit = deposits[0]
 
-    state = state.copy(
-        eth1_data=state.eth1_data.copy(
-            deposit_root=root,
-            deposit_count=state.eth1_data.deposit_count + len(deposits),
-        ),
-        eth1_deposit_index=0 if not leaves else len(leaves),
+    eth1_data = state.eth1_data.mset(
+        "deposit_root",
+        root,
+        "deposit_count",
+        state.eth1_data.deposit_count + len(deposits),
+    )
+    state = state.mset(
+        "eth1_data", eth1_data, "eth1_deposit_index", 0 if not leaves else len(leaves)
     )
 
     return state, deposit
@@ -124,7 +148,7 @@ def create_mock_genesis(
         pubkeys=pubkeys, keymap=keymap, config=config
     )
 
-    genesis_eth1_data = Eth1Data(
+    genesis_eth1_data = Eth1Data.create(
         deposit_root=deposit_root,
         deposit_count=len(genesis_deposits),
         block_hash=ZERO_HASH32,

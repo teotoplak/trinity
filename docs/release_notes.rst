@@ -5,6 +5,161 @@ Trinity is moving fast. Read up on all the latest improvements.
 
 .. towncrier release notes start
 
+Trinity 0.1.0-alpha.34 (2019-12-23)
+-----------------------------------
+
+Features
+~~~~~~~~
+
+- Full rework of ``Component`` APIs.  CLI validation is now done during application initialization.  Component lifecycle is well defined and simpler to implement. (`#1328 <https://github.com/ethereum/trinity/issues/1328>`__)
+- Add support for `eth_getTransactionReceipt` JSON-RPC API
+
+  See: https://github.com/ethereum/wiki/wiki/JSON-RPC#eth_gettransactionreceipt (`#1337 <https://github.com/ethereum/trinity/issues/1337>`__)
+- ``AsyncioIsolatedComponent`` no longer uses the standard libary ``multiprocessing`` for process isolation, in favor of using the more async friendly ``asyncio-run-in-process`` (`#1363 <https://github.com/ethereum/trinity/issues/1363>`__)
+- Underlying ``web3`` module changed from v4 to v5, including in the console. (`#1383 <https://github.com/ethereum/trinity/issues/1383>`__)
+- End JSON-RPC responses with `\n` to support dopple. (`#1388 <https://github.com/ethereum/trinity/issues/1388>`__)
+- Upgrade Py-EVM and add support for Muir Glacier fork (`#1409 <https://github.com/ethereum/trinity/issues/1409>`__)
+
+
+Bugfixes
+~~~~~~~~
+
+- Ensure ``eth_getStorageAt`` pads results to 32 byte
+
+  See `Spec <https://github.com/ethereum/wiki/wiki/JSON-RPC#eth_getstorageat>`_ or
+  `Geth Example <https://api.etherscan.io/api?module=proxy&action=eth_getStorageAt&address=0x6e03d9cce9d60f3e9f2597e13cd4c54c55330cfd&position=0x0&tag=latest&apikey=YourApiKeyToken>`_ (`#1403 <https://github.com/ethereum/trinity/issues/1403>`__)
+- Catch exception leaking out of the `UpnpService` and log it as warning. (`#1410 <https://github.com/ethereum/trinity/issues/1410>`__)
+
+
+Performance improvements
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Refactor ``Component`` APIs to support concurrent starting and stopping. (`#1328 <https://github.com/ethereum/trinity/issues/1328>`__)
+
+
+Internal Changes - for Trinity Contributors
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Test Trinity against Istanbul tests (`#1372 <https://github.com/ethereum/trinity/issues/1372>`__)
+
+
+Trinity 0.1.0-alpha.33 (2019-12-12)
+-----------------------------------
+
+Bugfixes
+~~~~~~~~
+
+- Upgraded py-evm to fix the error: ``KeyError: (b'\x03', 'key could not be deleted in JournalDB,
+  because it was missing')``, while importing Istanbul blocks. See `other py-evm changes from
+  v0.3.0-alpha.11
+  <https://py-evm.readthedocs.io/en/latest/release_notes.html#py-evm-0-3-0-alpha-11-2019-12-12>`_ (`#1376 <https://github.com/ethereum/trinity/issues/1376>`__)
+
+
+Internal Changes - for Trinity Contributors
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Fix flaky interactive web3 console test
+
+  Due to the way components cross connect to each
+  other, not all logs of that startup routine are
+  happening deterministically. We were waiting on
+  a log that would sometimes never show up for all
+  valid reason. This test is now based on a log that
+  is guaranteed to show up unless a serious bug
+  happened. (`#1382 <https://github.com/ethereum/trinity/issues/1382>`__)
+
+
+Trinity 0.1.0-alpha.32 (2019-12-09)
+-----------------------------------
+
+Bugfixes
+~~~~~~~~
+
+- Upgrade py-evm to v0.3.0-alpha.10, for critical Istanbul bugfix, related to net gas metering. (`#1893 <https://github.com/ethereum/trinity/issues/1893>`__)
+- Only allow a single connection per peer, even if an outgoing and incoming handshake are initiated
+  simultaneously. Bonus: squashed UnknownAPI log when talking to a peer that is disconnecting. (`#1352 <https://github.com/ethereum/trinity/issues/1352>`__)
+- Quiet down a flood of :class:`BrokenPipeError` that occasionally triggers on shutdown during Beam
+  Sync. (`#1355 <https://github.com/ethereum/trinity/issues/1355>`__)
+- Ensure ThreadPoolExecutor in beam importer is set up with contextmanager
+
+  Without contextmanager one needs to manually call `shutdown` on the
+  executor which we weren't doing either. This change may fix some
+  warnings during shutdown of the client. (`#1371 <https://github.com/ethereum/trinity/issues/1371>`__)
+
+
+Performance improvements
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Speed up the TxPool shutdown a bit: it had hanging tasks that we were waiting 5s to force-close. (`#1356 <https://github.com/ethereum/trinity/issues/1356>`__)
+
+
+Improved Documentation
+~~~~~~~~~~~~~~~~~~~~~~
+
+- Add Matomo Tracking to Docs site.
+
+  Matomo is an Open Source web analytics platform that allows us
+  to get better insights and optimize for our audience without
+  the negative consequences of other compareable platforms.
+
+  Read more: https://matomo.org/why-matomo/ (`#1365 <https://github.com/ethereum/trinity/issues/1365>`__)
+
+
+Internal Changes - for Trinity Contributors
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Beam Sync now warns in the logs when it skips ahead of headers (relying on light-client-style
+  verification of older headers). (`#1356 <https://github.com/ethereum/trinity/issues/1356>`__)
+
+
+Trinity 0.1.0-alpha.31 (2019-12-04)
+-----------------------------------
+
+Features
+~~~~~~~~
+
+- Upgrade py-evm to v0.3.0-alpha.9, which includes **consensus-sensitive** Istanbul fix. See the `py-evm release notes
+  <https://py-evm.readthedocs.io/en/latest/release_notes.html#py-evm-0-3-0-alpha-9-2019-12-02>`_ (`#1343 <https://github.com/ethereum/trinity/issues/1343>`__)
+- Add `export` and `import` command that lets one export blocks to a file or import blocks from a file. (`#1266 <https://github.com/ethereum/trinity/issues/1266>`__)
+- Properly handle Ropsten and Goerli when using
+  `--beam-from-checkpoint eth://block/byetherscan/latest` to resolve a checkpoint. Also,
+  propagate a proper error to the user in case the syntax is used for an unsupported networḱ. (`#1269 <https://github.com/ethereum/trinity/issues/1269>`__)
+- Automatically rotate logfiles across runs (`#1294 <https://github.com/ethereum/trinity/issues/1294>`__)
+- Add support for `eth_getTransactionByHash` JSON-RPC API (`#1329 <https://github.com/ethereum/trinity/issues/1329>`__)
+- When resuming beam sync, prefer to pick up from the canonical tip, if it's not too far behind. (`#1349 <https://github.com/ethereum/trinity/issues/1349>`__)
+
+
+Bugfixes
+~~~~~~~~
+
+- Turn leaking exceptions into properly formatted user errors. (`#1269 <https://github.com/ethereum/trinity/issues/1269>`__)
+
+
+Performance improvements
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Speed up beam sync shutdown, and second launch from checkpoint (`#1345 <https://github.com/ethereum/trinity/issues/1345>`__)
+
+
+Deprecations and Removals
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Removed experimental support for discovery v5 protocol (`#1314 <https://github.com/ethereum/trinity/issues/1314>`__)
+
+
+Internal Changes - for Trinity Contributors
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Show more helpful information in logs, like:
+
+  - show peer info in more logs and exceptions
+  - add extra information about exception context & cause
+  - show eth_api stats in the "Peer details" again
+  - show which service is stuck waiting on subservices (`#1344 <https://github.com/ethereum/trinity/issues/1344>`__)
+
+- Collapse log spam about missing trie nodes (`#1345 <https://github.com/ethereum/trinity/issues/1345>`__)
+
+
 Trinity 0.1.0-alpha.30 (2019-11-13)
 -----------------------------------
 

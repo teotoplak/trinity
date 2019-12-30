@@ -3,6 +3,7 @@ import signal
 import sys
 import tempfile
 import time
+import os
 
 import pexpect
 import pytest
@@ -61,7 +62,8 @@ async def test_expected_logs_for_full_mode(command, unused_tcp_port):
     async with AsyncProcessRunner.run(command, timeout_sec=120) as runner:
         assert await contains_all(runner.stderr, {
             "Started DB server process",
-            "Component started: Sync / PeerPool",
+            "Starting components",
+            "Components started",
             "Running Tx Pool",
             "Running server",
             "IPC started at",
@@ -83,8 +85,8 @@ async def test_expected_logs_for_full_mode_with_txpool_disabled(command, unused_
     async with AsyncProcessRunner.run(command, timeout_sec=120) as runner:
         assert await contains_all(runner.stderr, {
             "Started DB server process",
-            "Component started: Sync / PeerPool",
-            "Transaction pool disabled",
+            "Starting components",
+            "Components started",
             "Running server",
             "IPC started at",
         })
@@ -105,8 +107,8 @@ async def test_expected_logs_with_disabled_txpool(command, unused_tcp_port):
     async with AsyncProcessRunner.run(command, timeout_sec=120) as runner:
         assert await contains_all(runner.stderr, {
             "Started DB server process",
-            "Component started: Sync / PeerPool",
-            "Transaction pool does not support light mode",
+            "Starting components",
+            "Components started",
         })
 
 
@@ -122,7 +124,8 @@ async def test_expected_logs_for_light_mode(command):
     async with AsyncProcessRunner.run(command, timeout_sec=40) as runner:
         assert await contains_all(runner.stderr, {
             "Started DB server process",
-            "Component started: Sync / PeerPool",
+            "Starting components",
+            "Components started",
             "IPC started at",
         })
 
@@ -140,6 +143,7 @@ async def test_expected_logs_for_light_mode(command):
                 # make up this replacement marker
                 '--data-dir={trinity_root_path}/devnet',
                 '--network-id=5',
+                '--disable-tx-pool',
                 '--log-level=DEBUG',
             ), 5, '0x065fd78e53dcef113bf9d7732dac7c5132dcf85c9588a454d832722ceb097422'),
     )
@@ -165,13 +169,13 @@ async def test_web3_commands_via_attached_console(command,
     async with AsyncProcessRunner.run(command, timeout_sec=120) as runner:
         assert await contains_all(runner.stderr, {
             "Started DB server process",
-            "Component started: Sync / PeerPool",
+            "Starting components",
+            "Components started",
             "IPC started at",
-            "Component started: JSON-RPC API",
             # Ensure we do not start making requests before Trinity is ready.
-            # Waiting for the json-rpc-api event bus to connect to other endpoints
-            # seems to be late enough in the process for this to be the case.
-            "EventBus Endpoint bjson-rpc-api connecting to other Endpoints",
+            # Waiting for the JSON-RPC API to be announced seems to be
+            # late enough in the process for this to be the case.
+            "New EventBus Endpoint connected bjson-rpc-api",
         })
 
         attached_trinity = pexpect.spawn(
@@ -222,48 +226,52 @@ async def test_does_not_throw_errors_on_short_run(command, unused_tcp_port):
             # Expected stderr logs
             {'Started main process'},
             # Unexpected stderr logs
-            {'DiscoveryProtocol  >>> ping'},
+            {'>>> ping'},
             # Expected file logs
             {'Started main process', 'Logging initialized'},
             # Unexpected file logs
-            {'DiscoveryProtocol  >>> ping'},
+            {'>>> ping'},
         ),
         (
             # Enable DEBUG2 logs across the board
             ('trinity', '-l=DEBUG2'),
-            {'Started main process', 'DiscoveryProtocol  >>> ping'},
+            {'Started main process', '>>> ping'},
             {},
-            {'Started main process', 'DiscoveryProtocol  >>> ping'},
+            {'Started main process', '>>> ping'},
             {},
         ),
         (   # Enable DEBUG2 logs for everything except discovery which is reduced to ERROR logs
             ('trinity', '-l=DEBUG2', '-l', 'p2p.discovery=ERROR'),
             {'Started main process', 'ConnectionTrackerServer  Running task <coroutine object'},
-            {'DiscoveryProtocol  >>> ping'},
+            {'>>> ping'},
             {'Started main process', 'ConnectionTrackerServer  Running task <coroutine object'},
-            {'DiscoveryProtocol  >>> ping'},
+            {'>>> ping'},
         ),
-        (
+        pytest.param(
             # Reduce stderr logging to ERROR logs but report DEBUG2 or higher for file logs
             ('trinity', '--stderr-log-level=ERROR', '--file-log-level=DEBUG2',),
             {},
-            {'Started main process', 'DiscoveryProtocol  >>> ping'},
-            {'Started main process', 'DiscoveryProtocol  >>> ping'},
+            {'Started main process', '>>> ping'},
+            {'Started main process', '>>> ping'},
             {},
+            # TODO: investigate in #1347
+            marks=(pytest.mark.xfail),
         ),
-        (
+        pytest.param(
             # Reduce everything to ERROR logs, except discovery that should report DEBUG2 or higher
             ('trinity', '-l=ERROR', '-l', 'p2p.discovery=DEBUG2'),
-            {'DiscoveryProtocol  >>> ping'},
+            {'>>> ping'},
             {'Started main process'},
             {},
             {},
             # Increasing per-module log level to a higher value than the general log level does
             # not yet work for file logging. Once https://github.com/ethereum/trinity/issues/689
             # is resolved, the following should work.
-            # {'DiscoveryProtocol  >>> ping'},
+            # {'>>> ping'},
             # {'Started main process'},
-        )
+            # TODO: investigate in #1347
+            marks=(pytest.mark.xfail),
+        ),
     )
 )
 @pytest.mark.asyncio
@@ -290,7 +298,7 @@ async def test_logger_configuration(command,
         async for line in runner.stderr:
             if marker_seen_at != 0 and time.time() - marker_seen_at > 3:
                 break
-            if "DiscoveryProtocol" in line:
+            if "DiscoveryService" in line:
                 marker_seen_at = time.time()
                 stderr_logs.append(line)
             else:
@@ -304,7 +312,8 @@ async def test_logger_configuration(command,
             if contains_substring(stderr_logs, log):
                 raise AssertionError(f"Log should not contain `{log}` but does")
 
-        log_file_path = TrinityConfig(app_identifier="eth1", network_id=1).logfile_path
+        log_dir = TrinityConfig(app_identifier="eth1", network_id=1).log_dir
+        log_file_path = max(log_dir.glob('*'), key=os.path.getctime)
         with open(log_file_path) as log_file:
             file_content = log_file.read()
 

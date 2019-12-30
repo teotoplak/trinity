@@ -1,6 +1,7 @@
-import asyncio
 import random
 import re
+
+import trio
 
 import pytest
 
@@ -12,13 +13,10 @@ from eth_hash.auto import keccak
 
 from eth_keys import keys
 
-from cancel_token import CancelToken
-
 from p2p import constants
 from p2p import discovery
 from p2p.tools.factories import (
     AddressFactory,
-    DiscoveryProtocolFactory,
     NodeFactory,
     PrivateKeyFactory,
 )
@@ -30,25 +28,18 @@ def short_timeout(monkeypatch):
     monkeypatch.setattr(constants, 'KADEMLIA_REQUEST_TIMEOUT', 0.05)
 
 
-@pytest.fixture
-def alice():
-    return DiscoveryProtocolFactory.from_seed(b'alice')
-
-
-@pytest.fixture
-def bob():
-    return DiscoveryProtocolFactory.from_seed(b'bob')
-
-
-def test_ping_pong(alice, bob):
-    # Connect alice's and bob's transports directly so we don't need to deal with the complexities
-    # of going over the wire.
-    link_transports(alice, bob)
+@pytest.mark.trio
+async def test_ping_pong(nursery, manually_driven_discovery_pair):
+    alice, bob = manually_driven_discovery_pair
     # Collect all pongs received by alice in a list for later inspection.
     received_pongs = []
     alice.recv_pong_v4 = lambda node, payload, hash_: received_pongs.append((node, payload))
 
     token = alice.send_ping_v4(bob.this_node)
+
+    with trio.fail_after(0.5):
+        await bob.consume_datagram()
+        await alice.consume_datagram()
 
     assert len(received_pongs) == 1
     node, payload = received_pongs[0]
@@ -56,15 +47,14 @@ def test_ping_pong(alice, bob):
     assert token == payload[1]
 
 
-def _test_find_node_neighbours(alice, bob):
+@pytest.mark.trio
+async def test_find_node_neighbours(nursery, manually_driven_discovery_pair):
+    alice, bob = manually_driven_discovery_pair
     # Add some nodes to bob's routing table so that it has something to use when replying to
     # alice's find_node.
     for _ in range(constants.KADEMLIA_BUCKET_SIZE * 2):
         bob.update_routing_table(NodeFactory())
 
-    # Connect alice's and bob's transports directly so we don't need to deal with the complexities
-    # of going over the wire.
-    link_transports(alice, bob)
     # Collect all neighbours packets received by alice in a list for later inspection.
     received_neighbours = []
     alice.recv_neighbours_v4 = lambda node, payload, hash_: received_neighbours.append((node, payload))  # noqa: E501
@@ -72,6 +62,13 @@ def _test_find_node_neighbours(alice, bob):
     bob.update_routing_table(alice.this_node)
 
     alice.send_find_node_v4(bob.this_node, alice.this_node.id)
+
+    with trio.fail_after(0.5):
+        await bob.consume_datagram()
+        # Alice needs to consume two datagrams here because we expect bob's response to be split
+        # across two packets since a single one would be bigger than protocol's byte limit.
+        await alice.consume_datagram()
+        await alice.consume_datagram()
 
     # Bob should have sent two neighbours packets in order to keep the total packet size under the
     # 1280 bytes limit.
@@ -86,183 +83,186 @@ def _test_find_node_neighbours(alice, bob):
     assert len(neighbours) == constants.KADEMLIA_BUCKET_SIZE
 
 
-def test_find_node_neighbours_v4(alice, bob):
-    _test_find_node_neighbours(alice=alice, bob=bob)
-
-
-@pytest.mark.asyncio
+@pytest.mark.trio
 async def test_protocol_bootstrap():
     node1, node2 = NodeFactory.create_batch(2)
-    proto = MockDiscoveryProtocol([node1, node2])
+    discovery = MockDiscoveryService([node1, node2])
 
     async def bond(node):
-        assert proto.routing.add_node(node) is None
+        assert discovery.routing.add_node(node) is None
         return True
 
     # Pretend we bonded successfully with our bootstrap nodes.
-    proto.bond = bond
+    discovery.bond = bond
 
-    await proto.bootstrap()
+    await discovery.bootstrap()
 
-    assert len(proto.messages) == 2
+    assert len(discovery.messages) == 2
     # We don't care in which order the bootstrap nodes are contacted, nor which node_id was used
     # in the find_node request, so we just assert that we sent find_node msgs to both nodes.
-    assert sorted([(node, cmd) for (node, cmd, _) in proto.messages]) == sorted([
+    assert sorted([(node, cmd) for (node, cmd, _) in discovery.messages]) == sorted([
         (node1, 'find_node'),
         (node2, 'find_node')])
 
 
-@pytest.mark.asyncio
+@pytest.mark.trio
 @pytest.mark.parametrize('echo', ['echo', b'echo'])
-async def test_wait_ping(echo):
-    proto = MockDiscoveryProtocol([])
+async def test_wait_ping(nursery, echo):
+    discovery = MockDiscoveryService([])
     node = NodeFactory()
 
-    # Schedule a call to proto.recv_ping() simulating a ping from the node we expect.
-    recv_ping_coroutine = asyncio.coroutine(lambda: proto.recv_ping_v4(node, echo, b''))
-    asyncio.ensure_future(recv_ping_coroutine())
+    # Schedule a call to discovery.recv_ping() simulating a ping from the node we expect.
+    async def recv_ping() -> None:
+        discovery.recv_ping_v4(node, echo, b'')
+    nursery.start_soon(recv_ping)
 
-    got_ping = await proto.wait_ping(node)
+    got_ping = await discovery.wait_ping(node)
 
     assert got_ping
     # Ensure wait_ping() cleaned up after itself.
-    assert node not in proto.ping_callbacks
+    assert node not in discovery.ping_callbacks
 
     # If we waited for a ping from a different node, wait_ping() would timeout and thus return
     # false.
-    recv_ping_coroutine = asyncio.coroutine(lambda: proto.recv_ping_v4(node, echo, b''))
-    asyncio.ensure_future(recv_ping_coroutine())
+    nursery.start_soon(recv_ping)
 
     node2 = NodeFactory()
-    got_ping = await proto.wait_ping(node2)
+    got_ping = await discovery.wait_ping(node2)
 
     assert not got_ping
-    assert node2 not in proto.ping_callbacks
+    assert node2 not in discovery.ping_callbacks
 
 
-@pytest.mark.asyncio
-async def test_wait_pong():
-    proto = MockDiscoveryProtocol([])
-    us = proto.this_node
+@pytest.mark.trio
+async def test_wait_pong(nursery):
+    service = MockDiscoveryService([])
+    us = service.this_node
     node = NodeFactory()
 
-    token = b'token'
-    # Schedule a call to proto.recv_pong() simulating a pong from the node we expect.
-    pong_msg_payload = [us.address.to_endpoint(), token, discovery._get_msg_expiration()]
-    recv_pong_coroutine = asyncio.coroutine(lambda: proto.recv_pong_v4(node, pong_msg_payload, b''))
-    asyncio.ensure_future(recv_pong_coroutine())
+    async def recv_pong(payload) -> None:
+        service.recv_pong_v4(node, payload, b'')
 
-    got_pong = await proto.wait_pong_v4(node, token)
+    # Schedule a call to service.recv_pong() simulating a pong from the node we expect.
+    token = b'token'
+    pong_msg_payload = [us.address.to_endpoint(), token, discovery._get_msg_expiration()]
+    nursery.start_soon(recv_pong, pong_msg_payload)
+
+    got_pong = await service.wait_pong_v4(node, token)
 
     assert got_pong
     # Ensure wait_pong() cleaned up after itself.
-    pingid = proto._mkpingid(token, node)
-    assert pingid not in proto.pong_callbacks
+    pingid = service._mkpingid(token, node)
+    assert pingid not in service.pong_callbacks
 
     # If the remote node echoed something different than what we expected, wait_pong() would
     # timeout.
     wrong_token = b"foo"
     pong_msg_payload = [us.address.to_endpoint(), wrong_token, discovery._get_msg_expiration()]
-    recv_pong_coroutine = asyncio.coroutine(lambda: proto.recv_pong_v4(node, pong_msg_payload, b''))
-    asyncio.ensure_future(recv_pong_coroutine())
+    nursery.start_soon(recv_pong, pong_msg_payload)
 
-    got_pong = await proto.wait_pong_v4(node, token)
+    got_pong = await service.wait_pong_v4(node, token)
 
     assert not got_pong
-    assert pingid not in proto.pong_callbacks
+    assert pingid not in service.pong_callbacks
 
 
-@pytest.mark.asyncio
-async def test_wait_neighbours():
-    proto = MockDiscoveryProtocol([])
+@pytest.mark.trio
+async def test_wait_neighbours(nursery):
+    service = MockDiscoveryService([])
     node = NodeFactory()
 
-    # Schedule a call to proto.recv_neighbours_v4() simulating a neighbours response from the node
-    # we expect.
+    # Schedule a call to service.recv_neighbours_v4() simulating a neighbours response from the
+    # node we expect.
     neighbours = tuple(NodeFactory.create_batch(3))
     neighbours_msg_payload = [
         [n.address.to_endpoint() + [n.pubkey.to_bytes()] for n in neighbours],
         discovery._get_msg_expiration()]
-    recv_neighbours_coroutine = asyncio.coroutine(
-        lambda: proto.recv_neighbours_v4(node, neighbours_msg_payload, b''))
-    asyncio.ensure_future(recv_neighbours_coroutine())
 
-    received_neighbours = await proto.wait_neighbours(node)
+    async def recv_neighbours() -> None:
+        service.recv_neighbours_v4(node, neighbours_msg_payload, b'')
+    nursery.start_soon(recv_neighbours)
+
+    received_neighbours = await service.wait_neighbours(node)
 
     assert neighbours == received_neighbours
     # Ensure wait_neighbours() cleaned up after itself.
-    assert node not in proto.neighbours_callbacks
+    assert node not in service.neighbours_callbacks
 
     # If wait_neighbours() times out, we get an empty list of neighbours.
-    received_neighbours = await proto.wait_neighbours(node)
+    received_neighbours = await service.wait_neighbours(node)
 
     assert received_neighbours == tuple()
-    assert node not in proto.neighbours_callbacks
+    assert node not in service.neighbours_callbacks
 
 
-@pytest.mark.asyncio
-async def test_bond():
-    proto = MockDiscoveryProtocol([])
+@pytest.mark.trio
+async def test_bond(nursery, monkeypatch):
+    discovery = MockDiscoveryService([])
     node = NodeFactory()
 
     token = b'token'
     # Do not send pings, instead simply return the pingid we'd expect back together with the pong.
-    proto.send_ping_v4 = lambda remote: token
+    monkeypatch.setattr(discovery, 'send_ping_v4', lambda remote: token)
 
     # Pretend we get a pong from the node we are bonding with.
-    proto.wait_pong_v4 = asyncio.coroutine(lambda n, t: t == token and n == node)
+    async def wait_pong_v4(remote, t) -> bool:
+        return t == token and remote == node
 
-    bonded = await proto.bond(node)
+    monkeypatch.setattr(discovery, 'wait_pong_v4', wait_pong_v4)
+
+    bonded = await discovery.bond(node)
 
     assert bonded
 
     # If we try to bond with any other nodes we'll timeout and bond() will return False.
     node2 = NodeFactory()
-    bonded = await proto.bond(node2)
+    bonded = await discovery.bond(node2)
 
     assert not bonded
 
 
-def test_update_routing_table():
-    proto = MockDiscoveryProtocol([])
+@pytest.mark.trio
+async def test_update_routing_table():
+    discovery = MockDiscoveryService([])
     node = NodeFactory()
 
-    assert proto.update_routing_table(node) is None
+    assert discovery.update_routing_table(node) is None
 
-    assert node in proto.routing
+    assert node in discovery.routing
 
 
-@pytest.mark.asyncio
-async def test_update_routing_table_triggers_bond_if_eviction_candidate():
-    proto = MockDiscoveryProtocol([])
+@pytest.mark.trio
+async def test_update_routing_table_triggers_bond_if_eviction_candidate(
+        nursery, manually_driven_discovery, monkeypatch):
+    discovery = manually_driven_discovery
     old_node, new_node = NodeFactory.create_batch(2)
 
     bond_called = False
 
-    def bond(node):
+    async def bond(node):
         nonlocal bond_called
         bond_called = True
         assert node == old_node
 
-    proto.bond = asyncio.coroutine(bond)
+    monkeypatch.setattr(discovery, 'bond', bond)
     # Pretend our routing table failed to add the new node by returning the least recently seen
     # node for an eviction check.
-    proto.routing.add_node = lambda n: old_node
+    monkeypatch.setattr(discovery.routing, 'add_node', lambda n: old_node)
 
-    proto.update_routing_table(new_node)
+    discovery.update_routing_table(new_node)
 
-    assert new_node not in proto.routing
-    # The update_routing_table() call above will have scheduled a future call to proto.bond() so
+    assert new_node not in discovery.routing
+    # The update_routing_table() call above will have scheduled a future call to discovery.bond() so
     # we need to yield here to give it a chance to run.
-    await asyncio.sleep(0.001)
+    await trio.sleep(0.001)
     assert bond_called
 
 
-def test_get_max_neighbours_per_packet():
-    proto = DiscoveryProtocolFactory()
+@pytest.mark.trio
+async def test_get_max_neighbours_per_packet(nursery):
     # This test is just a safeguard against changes that inadvertently modify the behaviour of
     # _get_max_neighbours_per_packet().
-    assert proto._get_max_neighbours_per_packet() == 12
+    assert discovery.DiscoveryService._get_max_neighbours_per_packet() == 12
 
 
 def test_discover_v4_message_pack():
@@ -288,6 +288,40 @@ def test_unpack_eip8_packets():
             assert pubkey.to_hex() == '0xca634cae0d49acb401d8a4c6b6fe8c55b70d115bf400769cc1400f3258cd31387574077f301b421bc84df7266c44e9e6d569fc56be00812904767bf5ccd1fc7f'  # noqa: E501
             assert cmd.id == cmd_id
             assert cmd.elem_count == len(payload)
+
+
+class MockDiscoveryService(discovery.DiscoveryService):
+    """A DiscoveryService that instead of sending messages over the wire simply stores them in
+    self.messages.
+
+    Do not attempt to run it as a service (e.g. with TrioManager.run_service()), because that
+    won't work.
+    """
+
+    def __init__(self, bootnodes):
+        privkey = keys.PrivateKey(keccak(b"seed"))
+        self.messages = []
+        socket = trio.socket.socket(family=trio.socket.AF_INET, type=trio.socket.SOCK_DGRAM)
+        super().__init__(privkey, AddressFactory(), bootnodes, event_bus=None, socket=socket)
+
+    def send(self, node, msg_type, payload):
+        # Overwrite our parent's send() to ensure no tests attempt to use us to go over the
+        # network as that wouldn't work.
+        raise ValueError("MockDiscoveryService must not be used to send network messages")
+
+    def send_ping_v4(self, node):
+        echo = hex(random.randint(0, 2**256))[-32:]
+        self.messages.append((node, 'ping', echo))
+        return echo
+
+    def send_pong_v4(self, node, echo):
+        self.messages.append((node, 'pong', echo))
+
+    def send_find_node_v4(self, node, nodeid):
+        self.messages.append((node, 'find_node', nodeid))
+
+    def send_neighbours_v4(self, node, neighbours):
+        self.messages.append((node, 'neighbours', neighbours))
 
 
 def remove_whitespace(s):
@@ -354,46 +388,3 @@ eip8_packets = {
         8443b9a355010203b525a138aa34383fec3d2719a0""")),
     ),
 }
-
-
-def link_transports(proto1, proto2):
-    # Link both protocol's transports directly by having one's sendto() call the other's
-    # datagram_received().
-    proto1.transport = type(
-        "mock-transport",
-        (object,),
-        {"sendto": lambda msg, addr: proto2.datagram_received(msg, addr)},
-    )
-    proto2.transport = type(
-        "mock-transport",
-        (object,),
-        {"sendto": lambda msg, addr: proto1.datagram_received(msg, addr)},
-    )
-
-
-class MockHandler:
-    called = False
-
-    def __call__(self, node, payload, msg_hash, raw_msg):
-        self.called = True
-
-
-class MockDiscoveryProtocol(discovery.DiscoveryProtocol):
-    def __init__(self, bootnodes):
-        privkey = keys.PrivateKey(keccak(b"seed"))
-        self.messages = []
-        super().__init__(privkey, AddressFactory(), bootnodes, CancelToken("discovery-test"))
-
-    def send_ping_v4(self, node):
-        echo = hex(random.randint(0, 2**256))[-32:]
-        self.messages.append((node, 'ping', echo))
-        return echo
-
-    def send_pong_v4(self, node, echo):
-        self.messages.append((node, 'pong', echo))
-
-    def send_find_node_v4(self, node, nodeid):
-        self.messages.append((node, 'find_node', nodeid))
-
-    def send_neighbours_v4(self, node, neighbours):
-        self.messages.append((node, 'neighbours', neighbours))

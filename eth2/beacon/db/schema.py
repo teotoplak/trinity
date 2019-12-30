@@ -67,6 +67,14 @@ class BaseSchema(ABC):
     ) -> bytes:
         ...
 
+    #
+    # Fork choice
+    #
+    @staticmethod
+    @abstractmethod
+    def make_lmd_ghost_context_lookup_key(fork: str) -> bytes:
+        ...
+
 
 class SchemaV1(BaseSchema):
     #
@@ -79,6 +87,10 @@ class SchemaV1(BaseSchema):
     @staticmethod
     def make_slot_to_state_root_lookup_key(slot: int) -> bytes:
         return b"v1:beacon:slot-to-state-root%d" % slot
+
+    @staticmethod
+    def make_canonical_epoch_info_lookup_key() -> bytes:
+        return b"v1:beacon:canonical-epoch-info"
 
     #
     # Block
@@ -122,3 +134,10 @@ class SchemaV1(BaseSchema):
         attestaton_root: HashTreeRoot,
     ) -> bytes:
         return b"v1:beacon:attestation-root-to-block:%s" % attestaton_root
+
+    #
+    # Fork choice
+    #
+    @staticmethod
+    def make_lmd_ghost_context_lookup_key(fork: str) -> bytes:
+        return b"v1:beacon:fork-choice-lmd-ghost-context:%s" % fork.encode()

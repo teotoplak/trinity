@@ -38,7 +38,7 @@ STATUS_STRUCTURE = sedes.List((
 
 class Status(BaseCommand[StatusPayload]):
     protocol_command_id = 0
-    serialization_codec = RLPCodec(
+    serialization_codec: RLPCodec[StatusPayload] = RLPCodec(
         sedes=STATUS_STRUCTURE,
         process_inbound_payload_fn=compose(
             lambda args: StatusPayload(*args),
@@ -51,7 +51,7 @@ NEW_BLOCK_HASHES_STRUCTURE = sedes.CountableList(sedes.List([hash_sedes, sedes.b
 
 class NewBlockHashes(BaseCommand[Tuple[NewBlockHash, ...]]):
     protocol_command_id = 1
-    serialization_codec = RLPCodec(
+    serialization_codec: RLPCodec[Tuple[NewBlockHash, ...]] = RLPCodec(
         sedes=NEW_BLOCK_HASHES_STRUCTURE,
         process_inbound_payload_fn=apply_formatter_to_array(lambda args: NewBlockHash(*args)),
     )
@@ -77,7 +77,7 @@ GET_BLOCK_HEADERS_STRUCTURE = sedes.List((
 
 class GetBlockHeaders(BaseCommand[BlockHeadersQuery]):
     protocol_command_id = 3
-    serialization_codec = RLPCodec(
+    serialization_codec: RLPCodec[BlockHeadersQuery] = RLPCodec(
         sedes=GET_BLOCK_HEADERS_STRUCTURE,
         process_inbound_payload_fn=lambda args: BlockHeadersQuery(*args),
     )
@@ -125,7 +125,7 @@ NEW_BLOCK_STRUCTURE = sedes.List((
 
 class NewBlock(BaseCommand[NewBlockPayload]):
     protocol_command_id = 7
-    serialization_codec = RLPCodec(
+    serialization_codec: RLPCodec[NewBlockPayload] = RLPCodec(
         sedes=NEW_BLOCK_STRUCTURE,
         process_inbound_payload_fn=compose(
             lambda args: NewBlockPayload(*args),

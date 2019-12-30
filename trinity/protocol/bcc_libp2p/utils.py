@@ -59,8 +59,8 @@ from multiaddr import (
 )
 import multihash
 import ssz
-from ssz.sedes.serializable import (
-    BaseSerializable,
+from ssz.hashable_container import (
+    HashableContainer,
 )
 from ssz.tools import (
     to_formatted_dict,
@@ -89,7 +89,7 @@ from .messages import (
     BeaconBlocksByRootRequest,
 )
 
-MsgType = TypeVar("MsgType", bound=BaseSerializable)
+MsgType = TypeVar("MsgType", bound=HashableContainer)
 
 logger = logging.getLogger('trinity.protocol.bcc_libp2p')
 
@@ -116,7 +116,7 @@ def get_my_status(chain: BaseBeaconChain) -> Status:
     state = chain.get_head_state()
     head = chain.get_canonical_head()
     finalized_checkpoint = state.finalized_checkpoint
-    return Status(
+    return Status.create(
         head_fork_version=state.fork.current_version,
         finalized_root=finalized_checkpoint.root,
         finalized_epoch=finalized_checkpoint.epoch,
@@ -163,20 +163,17 @@ async def validate_peer_status(chain: BaseBeaconChain, peer_status: Status) -> N
         )
 
 
-def compare_chain_tip_and_finalized_epoch(chain: BaseBeaconChain, peer_status: Status) -> None:
+def peer_is_ahead(chain: BaseBeaconChain, peer_status: Status) -> bool:
     checkpoint = chain.get_head_state().finalized_checkpoint
     head_block = chain.get_canonical_head()
 
     peer_has_higher_finalized_epoch = peer_status.finalized_epoch > checkpoint.epoch
     peer_has_equal_finalized_epoch = peer_status.finalized_epoch == checkpoint.epoch
     peer_has_higher_head_slot = peer_status.head_slot > head_block.slot
-    if (
+    return (
         peer_has_higher_finalized_epoch or
         (peer_has_equal_finalized_epoch and peer_has_higher_head_slot)
-    ):
-        # TODO: kickoff syncing process with this peer
-        logger.debug("Peer's chain is ahead of us, start syncing with the peer.")
-        pass
+    )
 
 
 def validate_start_slot(chain: BaseBeaconChain, start_slot: Slot) -> None:
@@ -357,8 +354,11 @@ class Interaction:
                         exc_value: Optional[BaseException],
                         traceback: Optional[TracebackType],
                         ) -> None:
-        await self.stream.close()
-        self.debug("Ended")
+        if exc_type is None:
+            await self.stream.close()
+            self.debug("Ended")
+        else:
+            self.debug(f"{exc_type}: {exc_value}")
 
     async def write_request(self, message: MsgType) -> None:
         self.debug(f"Request {type(message).__name__}  {to_formatted_dict(message)}")
@@ -404,10 +404,10 @@ class Interaction:
 
     @property
     def peer_id(self) -> ID:
-        return self.stream.mplex_conn.peer_id
+        return self.stream.muxed_conn.peer_id
 
     def debug(self, message: str) -> None:
-        self.logger.debug(
+        self.logger.debug2(
             "Interaction %s    with %s    %s",
             self.stream.get_protocol().split("/")[4],
             str(self.peer_id)[:15],
@@ -486,13 +486,13 @@ async def write_resp(
     except OverflowError as error:
         raise WriteMessageFailure(f"resp_code={resp_code} is not valid") from error
     msg_bytes: bytes
-    # MsgType: `msg` is of type `BaseSerializable` if response code is success.
+    # MsgType: `msg` is of type `HashableContainer` if response code is success.
     if resp_code == ResponseCode.SUCCESS:
-        if isinstance(msg, BaseSerializable):
+        if isinstance(msg, HashableContainer):
             msg_bytes = _serialize_ssz_msg(msg)
         else:
             raise WriteMessageFailure(
-                "type of `msg` should be `BaseSerializable` if response code is SUCCESS, "
+                "type of `msg` should be `HashableContainer` if response code is SUCCESS, "
                 f"type(msg)={type(msg)}"
             )
     # error msg is of type `str` if response code is not SUCCESS.

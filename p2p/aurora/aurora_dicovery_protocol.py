@@ -8,10 +8,10 @@ from p2p import constants
 from p2p.abc import AddressAPI, NodeAPI
 from p2p.aurora.util import calculate_distance, aurora_pick, assumed_malicious_node_number, quantified_mistake, \
     optimize_distance_with_mistake, calculate_correctness_indicator, aurora_put, optimum
-from p2p.discovery import DiscoveryProtocol
+from p2p.discovery import DiscoveryService
 
 
-class AuroraDiscoveryProtocol(DiscoveryProtocol):
+class AuroraDiscoveryProtocol(DiscoveryService):
 
     def __init__(self,
                  privkey: datatypes.PrivateKey,
@@ -36,7 +36,6 @@ class AuroraDiscoveryProtocol(DiscoveryProtocol):
 
         while iteration < distance:
 
-            self.cancel_token.raise_if_triggered()
             self._send_find_node(current_node_in_walk, self.random_kademlia_node_id())
             candidates = await self.wait_neighbours(current_node_in_walk)
 

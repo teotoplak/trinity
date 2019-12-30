@@ -2,14 +2,15 @@ from eth_utils import ValidationError
 from lahja import BroadcastConfig
 import pytest
 
+from async_service import background_trio_service
 import trio
 from trio.testing import wait_all_tasks_blocked
 
 from eth2.beacon.constants import DEPOSIT_CONTRACT_TREE_DEPTH
 from eth2._utils.merkle.common import verify_merkle_branch
-from p2p.trio_service import background_service
 from trinity.components.eth2.eth1_monitor.eth1_monitor import (
     make_deposit_tree_and_root,
+    GetDistanceRequest,
     GetEth1DataRequest,
     GetDepositRequest,
     Eth1Monitor,
@@ -28,8 +29,7 @@ from trinity.tools.factories.db import AtomicDBFactory
 
 @pytest.mark.trio
 async def test_logs_handling(
-    w3,
-    deposit_contract,
+    eth1_data_provider,
     tester,
     num_blocks_confirmed,
     polling_period,
@@ -40,16 +40,14 @@ async def test_logs_handling(
     amount_0 = func_do_deposit()
     amount_1 = func_do_deposit()
     m = Eth1Monitor(
-        w3=w3,
-        deposit_contract_address=deposit_contract.address,
-        deposit_contract_abi=deposit_contract.abi,
+        eth1_data_provider=eth1_data_provider,
         num_blocks_confirmed=num_blocks_confirmed,
         polling_period=polling_period,
         start_block_number=start_block_number,
         event_bus=endpoint_server,
         base_db=AtomicDBFactory(),
     )
-    async with background_service(m):
+    async with background_trio_service(m):
         # Test: logs emitted prior to starting `Eth1Monitor` can still be queried.
         await wait_all_tasks_blocked()
         assert m.total_deposit_count == 0
@@ -280,6 +278,8 @@ async def test_ipc(
     async def request(request_type, **kwargs):
         await endpoint_client.wait_until_any_endpoint_subscribed_to(request_type)
         resp = await endpoint_client.request(request_type(**kwargs), broadcast_config)
+        if request_type is GetDistanceRequest:
+            return resp
         return resp.to_data()
 
     # Result from IPC should be the same as the direct call with the same args.
@@ -311,3 +311,27 @@ async def test_ipc(
     }
     with pytest.raises(Eth1MonitorValidationError):
         await request(GetEth1DataRequest, **get_eth1_data_kwargs_fails)
+
+    # Test: `get_distance`
+    # Fast forward for a few blocks
+    tester.mine_blocks(5)
+    latest_block = w3.eth.getBlock("latest")
+    latest_confirmed_block_number = latest_block.number - num_blocks_confirmed
+    latest_confirmed_block = w3.eth.getBlock(latest_confirmed_block_number)
+    eth1_voting_period_start_timestamp = latest_confirmed_block["timestamp"]
+    for distance in range(latest_confirmed_block_number):
+        block = w3.eth.getBlock(latest_confirmed_block_number - distance)
+        get_distance_kwargs = {
+            "block_hash": block["hash"],
+            "eth1_voting_period_start_timestamp": eth1_voting_period_start_timestamp,
+        }
+        resp = await request(GetDistanceRequest, **get_distance_kwargs)
+        assert distance == resp.distance
+        assert resp.error is None
+    # Fails
+    get_distance_fail_kwargs = {
+        "block_hash": b'\x12' * 32,
+        "eth1_voting_period_start_timestamp": eth1_voting_period_start_timestamp,
+    }
+    resp = await request(GetDistanceRequest, **get_distance_fail_kwargs)
+    assert resp.error is not None

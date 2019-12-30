@@ -6,6 +6,10 @@ class HandshakeFailure(BaseLibp2pError):
     ...
 
 
+class DialPeerError(BaseLibp2pError):
+    ...
+
+
 class MessageIOFailure(BaseLibp2pError):
     ...
 
@@ -51,4 +55,12 @@ class ServerError(IShouldRespondAnError):
 
 
 class UnhandshakedPeer(BaseLibp2pError):
+    ...
+
+
+class InvalidGossipMessage(BaseLibp2pError):
+    ...
+
+
+class NodeStartError(BaseLibp2pError):
     ...

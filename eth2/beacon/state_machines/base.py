@@ -5,11 +5,11 @@ from typing import Tuple, Type
 from eth._utils.datatypes import Configurable
 
 from eth2.beacon.db.chain import BaseBeaconChainDB
-from eth2.beacon.fork_choice.scoring import ScoringFn as ForkChoiceScoringFn
-from eth2.beacon.operations.attestation_pool import AttestationPool
+from eth2.beacon.fork_choice.scoring import BaseForkChoiceScoring
+from eth2.beacon.types.attestations import Attestation
 from eth2.beacon.types.blocks import BaseBeaconBlock
 from eth2.beacon.types.states import BeaconState
-from eth2.beacon.typing import FromBlockParams
+from eth2.beacon.typing import FromBlockParams, Timestamp
 from eth2.configs import Eth2Config  # noqa: F401
 
 from .state_transitions import BaseStateTransition
@@ -27,11 +27,11 @@ class BaseBeaconStateMachine(Configurable, ABC):
     block_class: Type[BaseBeaconBlock] = None
     state_class: Type[BeaconState] = None
     state_transition_class: Type[BaseStateTransition] = None
+    fork_choice_scoring_class: Type[BaseForkChoiceScoring] = None
+    fork_choice_scoring: BaseForkChoiceScoring = None
 
     @abstractmethod
-    def __init__(
-        self, chaindb: BaseBeaconChainDB, attestation_pool: AttestationPool
-    ) -> None:
+    def __init__(self, chaindb: BaseBeaconChainDB) -> None:
         ...
 
     @classmethod
@@ -54,8 +54,25 @@ class BaseBeaconStateMachine(Configurable, ABC):
     def state_transition(self) -> BaseStateTransition:
         ...
 
+    @classmethod
     @abstractmethod
-    def get_fork_choice_scoring(self) -> ForkChoiceScoringFn:
+    def get_fork_choice_scoring_class(cls) -> Type[BaseForkChoiceScoring]:
+        ...
+
+    @abstractmethod
+    def get_fork_choice_scoring(self) -> BaseForkChoiceScoring:
+        ...
+
+    @abstractmethod
+    def on_tick(self, time: Timestamp) -> None:
+        ...
+
+    @abstractmethod
+    def on_block(self, block: BaseBeaconBlock) -> None:
+        ...
+
+    @abstractmethod
+    def on_attestation(self, attestation: Attestation) -> None:
         ...
 
     #
@@ -79,11 +96,8 @@ class BaseBeaconStateMachine(Configurable, ABC):
 
 
 class BeaconStateMachine(BaseBeaconStateMachine):
-    def __init__(
-        self, chaindb: BaseBeaconChainDB, attestation_pool: AttestationPool
-    ) -> None:
+    def __init__(self, chaindb: BaseBeaconChainDB) -> None:
         self.chaindb = chaindb
-        self.attestation_pool = attestation_pool
 
     @classmethod
     def get_block_class(cls) -> Type[BaseBeaconBlock]:
@@ -124,6 +138,19 @@ class BeaconStateMachine(BaseBeaconStateMachine):
     def state_transition(self) -> BaseStateTransition:
         return self.get_state_transiton_class()(self.config)
 
+    @classmethod
+    def get_fork_choice_scoring_class(cls) -> Type[BaseForkChoiceScoring]:
+        return cls.fork_choice_scoring_class
+
+    def on_tick(self, time: Timestamp) -> None:
+        pass
+
+    def on_block(self, block: BaseBeaconBlock) -> None:
+        pass
+
+    def on_attestation(self, attestation: Attestation) -> None:
+        pass
+
     #
     # Import block API
     #
@@ -137,6 +164,6 @@ class BeaconStateMachine(BaseBeaconStateMachine):
             state, block=block, check_proposer_signature=check_proposer_signature
         )
 
-        block = block.copy(state_root=state.hash_tree_root)
+        block = block.set("state_root", state.hash_tree_root)
 
         return state, block

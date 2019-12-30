@@ -1,5 +1,3 @@
-import asyncio
-import itertools
 from typing import (
     Tuple,
     AsyncGenerator,
@@ -7,6 +5,9 @@ from typing import (
 
 from eth_utils import (
     ValidationError,
+)
+from lahja import (
+    EndpointAPI,
 )
 
 from cancel_token import (
@@ -25,13 +26,12 @@ from eth2.beacon.db.exceptions import FinalizedHeadNotFound
 from eth2.beacon.typing import (
     Slot,
 )
+from eth2.events import SyncRequest
 
 from trinity.db.beacon.chain import BaseAsyncBeaconChainDB
 from trinity.protocol.bcc_libp2p.node import PeerPool, Peer
 from trinity.sync.beacon.constants import (
     MAX_BLOCKS_PER_REQUEST,
-    PEER_SELECTION_RETRY_INTERVAL,
-    PEER_SELECTION_MAX_RETRIES,
 )
 from trinity.sync.common.chain import (
     SyncBlockImporter,
@@ -40,6 +40,8 @@ from eth2.configs import (
     Eth2GenesisConfig,
 )
 from trinity.protocol.bcc_libp2p.exceptions import RequestFailure
+
+from .exceptions import LeadingPeerNotFonud
 
 
 class BeaconChainSyncer(BaseService):
@@ -50,12 +52,14 @@ class BeaconChainSyncer(BaseService):
     block_importer: SyncBlockImporter
     genesis_config: Eth2GenesisConfig
     sync_peer: Peer
+    _event_bus: EndpointAPI
 
     def __init__(self,
                  chain_db: BaseAsyncBeaconChainDB,
                  peer_pool: PeerPool,
                  block_importer: SyncBlockImporter,
                  genesis_config: Eth2GenesisConfig,
+                 event_bus: EndpointAPI,
                  token: CancelToken = None) -> None:
         super().__init__(token)
 
@@ -63,59 +67,38 @@ class BeaconChainSyncer(BaseService):
         self.peer_pool = peer_pool
         self.block_importer = block_importer
         self.genesis_config = genesis_config
+        self._event_bus = event_bus
 
         self.sync_peer = None
 
-    @property
-    def is_sync_peer_selected(self) -> bool:
-        return self.sync_peer is not None
-
     async def _run(self) -> None:
-        for retry in itertools.count():
-            is_last_retry = retry == PEER_SELECTION_MAX_RETRIES - 1
-            if retry >= PEER_SELECTION_MAX_RETRIES:
-                raise Exception("Invariant: Cannot exceed max retries")
-
+        async for event in self.wait_iter(self._event_bus.stream(SyncRequest)):
             try:
                 self.sync_peer = await self.wait(self.select_sync_peer())
-            except ValidationError as exception:
-                self.logger.info(f"No suitable peers to sync with: {exception}")
-                if is_last_retry:
-                    # selecting sync peer has failed
-                    break
-                else:
-                    # wait some time and try again
-                    await asyncio.sleep(PEER_SELECTION_RETRY_INTERVAL)
-                    continue
+            except LeadingPeerNotFonud as exception:
+                self.logger.info("No suitable peers to sync with: %s", exception)
+                continue
             else:
                 # sync peer selected successfully
-                break
-
-            raise Exception("Unreachable")
-
-        if not self.is_sync_peer_selected:
-            self.logger.info("Failed to find suitable sync peer in time")
-            return
-
-        await self.wait(self.sync())
-
-        new_head = await self.chain_db.coro_get_canonical_head(BeaconBlock)
-        self.logger.info(f"Sync with {self.sync_peer} finished, new head: {new_head}")
+                await self.wait(self.sync())
+                new_head = await self.chain_db.coro_get_canonical_head(BeaconBlock)
+                self.logger.info(
+                    "Sync with %s finished, new head: %s",
+                    self.sync_peer,
+                    new_head,
+                )
+                # Reset the sync peer
+                self.sync_peer = None
 
     async def select_sync_peer(self) -> Peer:
         if len(self.peer_pool) == 0:
-            raise ValidationError("Not connected to anyone")
+            raise LeadingPeerNotFonud("Not connected to anyone")
 
         best_peer = self.peer_pool.get_best_head_slot_peer()
+        head = await self.chain_db.coro_get_canonical_head(BeaconBlock)
 
-        try:
-            finalized_head = await self.chain_db.coro_get_finalized_head(BeaconBlock)
-        # TODO(ralexstokes) look at better way to handle once we have fork choice in place
-        except FinalizedHeadNotFound:
-            return best_peer
-
-        if best_peer.head_slot <= finalized_head.slot:
-            raise ValidationError("No peer that is ahead of us")
+        if best_peer.head_slot <= head.slot:
+            raise LeadingPeerNotFonud("No peer is ahead of us")
 
         return best_peer
 
@@ -147,7 +130,7 @@ class BeaconChainSyncer(BaseService):
                     return
             else:
                 if batch[0].parent_root != last_block.signing_root:
-                    self.logger.info(f"Received batch is not linked to previous one")
+                    self.logger.info("Received batch is not linked to previous one")
                     break
             last_block = batch[-1]
 
