@@ -5,6 +5,7 @@ import math
 import pytest
 from unittest.mock import Mock
 
+import trio
 from eth_hash.auto import keccak
 
 from eth_keys import keys
@@ -15,6 +16,7 @@ from p2p import constants
 from p2p.abc import NodeAPI
 from p2p.aurora.aurora_dicovery_protocol import AuroraDiscoveryService
 from p2p.aurora.util import calculate_distance, aurora_pick
+from p2p.kademlia import Address
 from p2p.tools.factories import (
     AddressFactory,
     NodeFactory,
@@ -62,101 +64,111 @@ async def test_aurora_pick_non_existing_candidates():
     assert result in exclusion_candidates
 
 
-# todo reuse this test
-# @pytest.mark.parametrize("network_size, malpn, malpg, mistake_threshold, test_runs", [
-#     (100, 0.125, 1, 50, 1),
-#     (100, 0.125, 1, 100, 1),
-#     (100, 0.125, 0.7, 20, 3),
-#     (100, 0.125, 0.7, 80, 3),
-#     (10, 0.2, 1, 50, 3),
-# ])
-# @pytest.mark.asyncio
-# async def test_aurora_walk(network_size, malpn, malpg, mistake_threshold, test_runs):
-#     """ TODO this is a non-deterministic test, should be changed"""
-#     response_size = constants.KADEMLIA_BUCKET_SIZE
-#     batch = NodeFactory.create_batch(network_size)
-#     pubkey_honesty: Dict[any, Tuple[NodeAPI, bool]] = {}
-#     honest_nodes: Set[NodeAPI] = set()
-#     malicious_nodes: Set[NodeAPI] = set()
-#     for index, node in enumerate(batch):
-#         if index < network_size * malpn:
-#             pubkey_honesty.update({node.pubkey: False})
-#             malicious_nodes.add(node)
-#         else:
-#             pubkey_honesty.update({node.pubkey: True})
-#             honest_nodes.add(node)
-#     proto = MockDiscoveryProtocolAurora(batch, honest_nodes, malicious_nodes, malpg)
-#
-#     hit_number = 0
-#     miss_number = 0
-#     for _ in range(test_runs):
-#         entry_node = random.choice(tuple(malicious_nodes))
-#         _, result_pubkey, _ = await proto.aurora_walk(entry_node, network_size, response_size, mistake_threshold)
-#         if pubkey_honesty[result_pubkey]:
-#             hit_number += 1
-#         else:
-#             miss_number += 1
-#     assert hit_number > miss_number
-#
-#
-# def link_transport_to_multiple(our_protocol, protocols):
-#     def _tuple_address_from_protocol(protocol):
-#         return protocol.address.ip, protocol.address.udp_port
-#
-#     for protocol in protocols:
-#         protocol.transport = type(
-#             "mock-transport",
-#             (object,),
-#             {"sendto": lambda msg, addr: our_protocol
-#                 .datagram_received(msg, _tuple_address_from_protocol(protocol))},
-#         )
-#
-#     def _send_to_mock(msg, addr):
-#         ip, udp_port = addr
-#         # find protocol we want to send to
-#         # todo change this to filtering
-#         send_to_protocol = None
-#         for protocol in protocols:
-#             if protocol.address.ip == ip and protocol.address.udp_port == udp_port:
-#                 send_to_protocol = protocol
-#                 break
-#         # mimic sending over wire
-#         # await asyncio.sleep(1)
-#         return send_to_protocol.datagram_received(msg, _tuple_address_from_protocol(our_protocol))
-#
-#     _send_to_mock_coroutine = asyncio.coroutine(_send_to_mock)
-#
-#     our_protocol.transport = type(
-#         "mock-transport",
-#         (object,),
-#         {"sendto": _send_to_mock},
-#     )
-#
-#
-# class MockDiscoveryProtocolAurora(AuroraDiscoveryService):
-#     def __init__(self, bootstrap_nodes, honest_nodes: Set[NodeAPI], malicious_nodes: Set[NodeAPI], malpg):
-#         privkey = keys.PrivateKey(keccak(b"seed"))
-#         self.messages = []
-#         self.honest_nodes = honest_nodes
-#         self.malicious_nodes = malicious_nodes
-#         self.malpg = malpg
-#         super().__init__(privkey, AddressFactory(), bootstrap_nodes, CancelToken("discovery-test"))
-#
-#     def _send_find_node(self, node: NodeAPI, target_node_id: int) -> None:
-#         return None
-#
-#     async def wait_neighbours(self, remote: NodeAPI) -> Tuple[NodeAPI, ...]:
-#         response: List[NodeAPI] = list()
-#         response_size = constants.KADEMLIA_BUCKET_SIZE
-#
-#         number_of_malicious = min(math.ceil(response_size * self.malpg), len(self.malicious_nodes))
-#         number_of_honest = min(response_size - number_of_malicious, len(self.honest_nodes))
-#
-#         if number_of_malicious:
-#             response.extend(random.sample(self.malicious_nodes, number_of_malicious))
-#         if number_of_honest:
-#             response.extend(random.sample(self.honest_nodes, number_of_honest))
-#         return tuple(response)
+async def random_socket():
+    socket = trio.socket.socket(
+        family=trio.socket.AF_INET,
+        type=trio.socket.SOCK_DGRAM,
+    )
+    # specifying 0 as port number results in using random available port
+    await socket.bind(("127.0.0.1", 0))
+    return socket
+
+
+@pytest.mark.parametrize("network_size, malpn, malpg, mistake_threshold, test_runs", [
+    (100, 0.125, 1, 50, 1),
+    (100, 0.125, 1, 100, 1),
+    (100, 0.125, 0.7, 20, 3),
+    (100, 0.125, 0.7, 80, 3),
+    (10, 0.2, 1, 50, 3),
+])
+@pytest.mark.trio
+async def test_aurora_walk(network_size, malpn, malpg, mistake_threshold, test_runs):
+    """ TODO this is a non-deterministic test, should be changed"""
+    response_size = constants.KADEMLIA_BUCKET_SIZE
+    batch = NodeFactory.create_batch(network_size)
+    pubkey_honesty: Dict[any, Tuple[NodeAPI, bool]] = {}
+
+    # populate honest and malicious nodes
+    honest_nodes: Set[NodeAPI] = set()
+    malicious_nodes: Set[NodeAPI] = set()
+    for index, node in enumerate(batch):
+        if index < network_size * malpn:
+            pubkey_honesty.update({node.pubkey: False})
+            malicious_nodes.add(node)
+        else:
+            pubkey_honesty.update({node.pubkey: True})
+            honest_nodes.add(node)
+    socket = await random_socket()
+    proto = MockDiscoveryProtocolAurora(batch, honest_nodes, malicious_nodes, malpg, socket)
+
+    hit_number = 0
+    miss_number = 0
+    for _ in range(test_runs):
+        entry_node = random.choice(tuple(malicious_nodes))
+        _, result_pubkey, _ = await proto.aurora_walk(entry_node, network_size, response_size, mistake_threshold)
+        if pubkey_honesty[result_pubkey]:
+            hit_number += 1
+        else:
+            miss_number += 1
+    assert hit_number > miss_number
+
+
+def link_transport_to_multiple(our_protocol, protocols):
+    def _tuple_address_from_protocol(protocol):
+        return protocol.address.ip, protocol.address.udp_port
+
+    for protocol in protocols:
+        protocol.transport = type(
+            "mock-transport",
+            (object,),
+            {"sendto": lambda msg, addr: our_protocol
+                .datagram_received(msg, _tuple_address_from_protocol(protocol))},
+        )
+
+    def _send_to_mock(msg, addr):
+        ip, udp_port = addr
+        # find protocol we want to send to
+        # todo change this to filtering
+        send_to_protocol = None
+        for protocol in protocols:
+            if protocol.address.ip == ip and protocol.address.udp_port == udp_port:
+                send_to_protocol = protocol
+                break
+        # mimic sending over wire
+        # await asyncio.sleep(1)
+        return send_to_protocol.datagram_received(msg, _tuple_address_from_protocol(our_protocol))
+
+    our_protocol.transport = type(
+        "mock-transport",
+        (object,),
+        {"sendto": _send_to_mock},
+    )
+
+
+class MockDiscoveryProtocolAurora(AuroraDiscoveryService):
+    def __init__(self, bootstrap_nodes, honest_nodes: Set[NodeAPI], malicious_nodes: Set[NodeAPI], malpg, socket):
+        privkey = keys.PrivateKey(keccak(b"seed"))
+        self.messages = []
+        self.honest_nodes = honest_nodes
+        self.malicious_nodes = malicious_nodes
+        self.malpg = malpg
+        super().__init__(privkey, Address(*socket.getsockname()), bootstrap_nodes, None, socket)
+
+    def _send_find_node(self, node: NodeAPI, target_node_id: int) -> None:
+        return None
+
+    async def wait_neighbours(self, remote: NodeAPI) -> Tuple[NodeAPI, ...]:
+        response: List[NodeAPI] = list()
+        response_size = constants.KADEMLIA_BUCKET_SIZE
+
+        number_of_malicious = min(math.ceil(response_size * self.malpg), len(self.malicious_nodes))
+        number_of_honest = min(response_size - number_of_malicious, len(self.honest_nodes))
+
+        if number_of_malicious:
+            response.extend(random.sample(self.malicious_nodes, number_of_malicious))
+        if number_of_honest:
+            response.extend(random.sample(self.honest_nodes, number_of_honest))
+        return tuple(response)
 
 
 # todo try to reuse this test
