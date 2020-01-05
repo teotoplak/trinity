@@ -1,13 +1,23 @@
-from typing import Dict, List, Set
+from typing import Dict, List, Set, cast
 
 import scipy.stats as st
 import numpy
 import math
 import random
 
+from cancel_token import CancelToken
+from eth.abc import BlockHeaderAPI
+from lahja import EndpointAPI
 from scipy import stats as st
 
 from p2p.abc import NodeAPI
+from p2p.cancellable import CancellableMixin
+from tests.core.integration_test_helpers import run_proxy_peer_pool
+from trinity.constants import TO_NETWORKING_BROADCAST_CONFIG
+from trinity.protocol.common.events import ConnectToNodeCommand
+from trinity.protocol.common.peer import BaseProxyPeer
+from trinity.protocol.common.peer_pool_event_bus import BaseProxyPeerPool
+from trinity.protocol.eth.peer import ETHPeer, ETHPeerPoolEventServer, ETHProxyPeer
 
 
 def _distance_expectation_matrix_markov(transition_matrix):
@@ -113,3 +123,29 @@ def aurora_pick(candidates: Set[NodeAPI], exclusion_candidates: Set[NodeAPI]) ->
     not_excluded_candidates = candidates - exclusion_candidates
     set_to_choose_from = exclusion_candidates if len(not_excluded_candidates) == 0 else not_excluded_candidates
     return random.sample(set_to_choose_from, 1)[0]
+
+
+async def aurora_head(node: NodeAPI,
+                      event_bus: EndpointAPI,
+                      proxy_peer_pool: BaseProxyPeerPool,
+                      cancel_token: CancelToken):
+    """ Returns the head hash from a remote node """
+    cancellable_mixin: CancellableMixin = CancellableMixin()
+    timeout = 30
+
+    await event_bus.broadcast(
+        ConnectToNodeCommand(node),
+        TO_NETWORKING_BROADCAST_CONFIG
+    )
+
+    proxy_peer: BaseProxyPeer = None
+    async for peer in cancellable_mixin.wait_iter(
+            proxy_peer_pool.stream_existing_and_joining_peers(),
+            cancel_token,
+            timeout):
+        if peer.session.remote.id == node.id:
+            proxy_peer = peer
+            break
+
+    # todo implement getting head hash from a proxy peer
+    return proxy_peer

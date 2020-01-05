@@ -9,7 +9,7 @@ from lahja import EndpointAPI
 from p2p import constants
 from p2p.abc import AddressAPI, NodeAPI
 from p2p.aurora.util import calculate_distance, aurora_pick, assumed_malicious_node_number, quantified_mistake, \
-    optimize_distance_with_mistake, calculate_correctness_indicator, aurora_put, optimum
+    optimize_distance_with_mistake, calculate_correctness_indicator, aurora_put, optimum, aurora_head
 from p2p.discovery import DiscoveryService
 
 
@@ -61,7 +61,8 @@ class AuroraDiscoveryService(DiscoveryService):
             iteration += 1
         correctness_indicator = calculate_correctness_indicator(accumulated_mistake, standard_mistakes_threshold)
         # todo return chain head instead of key later on
-        return correctness_indicator, current_node_in_walk.pubkey, collected_nodes_set
+        head_hash = await aurora_head(current_node_in_walk)
+        return correctness_indicator, head_hash, collected_nodes_set
 
     def aurora_tally(self,
                      entry_node: NodeAPI,
