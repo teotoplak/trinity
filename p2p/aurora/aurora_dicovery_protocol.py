@@ -43,16 +43,17 @@ class AuroraDiscoveryService(DiscoveryService):
             candidates = await self.wait_neighbours(current_node_in_walk)
 
             last_neighbours_response_size = len(candidates)
+            num_of_collected_total = len(collected_nodes_set)
             # todo what about the known ones but not available? this should consider it
             num_of_already_known_peers = len(collected_nodes_set & set(candidates))
             mistake = quantified_mistake(network_size,
-                                         malicious_nodes_number_approx,
+                                         num_of_collected_total,
                                          last_neighbours_response_size,
                                          num_of_already_known_peers)
             accumulated_mistake += mistake
             if accumulated_mistake >= standard_mistakes_threshold:
-                break
-
+                # plausible malicious clique
+                return 0, None, collected_nodes_set
             distance = optimize_distance_with_mistake(distance, mistake)
             current_node_in_walk = aurora_pick(set(candidates), collected_nodes_set)
             collected_nodes_set.update(candidates)
@@ -61,7 +62,7 @@ class AuroraDiscoveryService(DiscoveryService):
             iteration += 1
         correctness_indicator = calculate_correctness_indicator(accumulated_mistake, standard_mistakes_threshold)
         # todo return chain head instead of key later on
-        head_hash = await aurora_head(current_node_in_walk)
+        head_hash = await aurora_head(current_node_in_walk, None, None, None)
         return correctness_indicator, head_hash, collected_nodes_set
 
     def aurora_tally(self,

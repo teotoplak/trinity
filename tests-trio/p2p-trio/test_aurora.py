@@ -74,16 +74,18 @@ async def random_socket():
     return socket
 
 
-@pytest.mark.parametrize("network_size, malpn, malpg, mistake_threshold, test_runs", [
-    (100, 0.125, 1, 50, 1),
-    (100, 0.125, 1, 100, 1),
-    (100, 0.125, 0.7, 20, 3),
-    (100, 0.125, 0.7, 80, 3),
-    (10, 0.2, 1, 50, 3),
+@pytest.mark.parametrize("network_size, malpn, malpg, mistake_threshold, should_exit_clique", [
+    (100, 0.125, 0.4, 50, False),  # finding honest node to sync
+    (100, 0.125, 1, 50, True),  # eclipse attack
+    (100, 0.4, 0.7, 50, True),  # almost full eclipse attack
+    (100, 0, 0.1, 50, False),  # all honest nodes
+    (100, 0.3, 0.7, 80, False),  # finding honest node to sync
 ])
 @pytest.mark.trio
-async def test_aurora_walk(network_size, malpn, malpg, mistake_threshold, test_runs):
-    """ TODO this is a non-deterministic test, should be changed"""
+async def test_aurora_walk(network_size, malpn, malpg, mistake_threshold, should_exit_clique):
+    # make this test deterministic
+    random.seed('seed')
+
     response_size = constants.KADEMLIA_BUCKET_SIZE
     batch = NodeFactory.create_batch(network_size)
     pubkey_honesty: Dict[any, Tuple[NodeAPI, bool]] = {}
@@ -101,16 +103,12 @@ async def test_aurora_walk(network_size, malpn, malpg, mistake_threshold, test_r
     socket = await random_socket()
     proto = MockDiscoveryProtocolAurora(batch, honest_nodes, malicious_nodes, malpg, socket)
 
-    hit_number = 0
-    miss_number = 0
-    for _ in range(test_runs):
-        entry_node = random.choice(tuple(malicious_nodes))
-        _, result_pubkey, _ = await proto.aurora_walk(entry_node, network_size, response_size, mistake_threshold)
-        if pubkey_honesty[result_pubkey]:
-            hit_number += 1
-        else:
-            miss_number += 1
-    assert hit_number > miss_number
+    entry_node = random.choice(tuple(malicious_nodes if malpn != 0 else honest_nodes))
+    correctness_indicator, result_pubkey, _ = await proto.aurora_walk(entry_node, network_size, response_size, mistake_threshold)
+    if should_exit_clique:
+        assert correctness_indicator == 0
+    else:
+        assert pubkey_honesty[result_pubkey]
 
 
 def link_transport_to_multiple(our_protocol, protocols):

@@ -133,6 +133,8 @@ async def aurora_head(node: NodeAPI,
     cancellable_mixin: CancellableMixin = CancellableMixin()
     timeout = 30
 
+    return node.pubkey
+
     await event_bus.broadcast(
         ConnectToNodeCommand(node),
         TO_NETWORKING_BROADCAST_CONFIG
@@ -148,4 +150,4 @@ async def aurora_head(node: NodeAPI,
             break
 
     # todo implement getting head hash from a proxy peer
-    return proxy_peer
+    return node.pubkey
