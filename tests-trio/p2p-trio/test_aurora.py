@@ -79,7 +79,7 @@ async def random_socket():
     (100, 0.125, 1, 50, True),  # eclipse attack
     (100, 0.4, 0.7, 50, True),  # almost full eclipse attack
     (100, 0, 0.1, 50, False),  # all honest nodes
-    (100, 0.3, 0.7, 80, False),  # finding honest node to sync
+    (100, 0.3, 0.6, 80, False),  # finding honest node to sync
 ])
 @pytest.mark.trio
 async def test_aurora_walk(network_size, malpn, malpg, mistake_threshold, should_exit_clique):

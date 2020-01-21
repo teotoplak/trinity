@@ -37,6 +37,9 @@ class AuroraDiscoveryService(DiscoveryService):
         accumulated_mistake = 0
         current_node_in_walk: NodeAPI = entry_node
 
+        self.logger.debug2(f"Starting Aurora walk - distance: {distance:.2f}, "
+                           f"mistake_threshold: {standard_mistakes_threshold}")
+
         while iteration < distance:
 
             self._send_find_node(current_node_in_walk, self.random_kademlia_node_id())
@@ -51,15 +54,18 @@ class AuroraDiscoveryService(DiscoveryService):
                                          last_neighbours_response_size,
                                          num_of_already_known_peers)
             accumulated_mistake += mistake
-            if accumulated_mistake >= standard_mistakes_threshold:
-                # plausible malicious clique
-                return 0, None, collected_nodes_set
             distance = optimize_distance_with_mistake(distance, mistake)
             current_node_in_walk = aurora_pick(set(candidates), collected_nodes_set)
             collected_nodes_set.update(candidates)
             if network_size == len(collected_nodes_set):
                 break
             iteration += 1
+            self.logger.debug2(f"iter: {iteration} | distance: {distance:.2f} | "
+                               f"{num_of_already_known_peers}/{last_neighbours_response_size} known peers | "
+                               f"total_mistake: {accumulated_mistake:.2f} (+{mistake:.2f})")
+            if accumulated_mistake >= standard_mistakes_threshold:
+                self.logger.debug2("Aurora is assuming malicious a activity: exiting the network!")
+                return 0, None, collected_nodes_set
         correctness_indicator = calculate_correctness_indicator(accumulated_mistake, standard_mistakes_threshold)
         # todo return chain head instead of key later on
         head_hash = await aurora_head(current_node_in_walk, None, None, None)
