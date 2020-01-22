@@ -47,6 +47,7 @@ from .events import (
     SendReceiptsEvent,
     SendTransactionsEvent,
 )
+from ..common.events import PeerHeadHashRequest, PeerHeadHashResponse
 
 
 class ProxyETHAPI:
@@ -77,7 +78,6 @@ class ProxyETHAPI:
                                 skip: int = 0,
                                 reverse: bool = True,
                                 timeout: float = None) -> Tuple[BlockHeaderAPI, ...]:
-
         response = await self._event_bus.request(
             GetBlockHeadersRequest(
                 self.session,
@@ -100,10 +100,25 @@ class ProxyETHAPI:
 
         return tuple(response.headers)
 
+    async def get_head_hash(self) -> Hash32:
+        response = await self._event_bus.request(
+            PeerHeadHashRequest(self.session),
+            self._broadcast_config
+        )
+
+        self.raise_if_needed(response)
+
+        self.logger.debug2(
+            "ProxyETHExchangeHandler returning %s hash head from %s",
+            response.head_hash,
+            self.session
+        )
+
+        return response.head_hash
+
     async def get_block_bodies(self,
                                headers: Sequence[BlockHeaderAPI],
                                timeout: float = None) -> BlockBodyBundles:
-
         response = await self._event_bus.request(
             GetBlockBodiesRequest(
                 self.session,
@@ -126,7 +141,6 @@ class ProxyETHAPI:
     async def get_node_data(self,
                             node_hashes: Sequence[Hash32],
                             timeout: float = None) -> NodeDataBundles:
-
         response = await self._event_bus.request(
             GetNodeDataRequest(
                 self.session,
@@ -149,7 +163,6 @@ class ProxyETHAPI:
     async def get_receipts(self,
                            headers: Sequence[BlockHeaderAPI],
                            timeout: float = None) -> ReceiptsBundles:
-
         response = await self._event_bus.request(
             GetReceiptsRequest(
                 self.session,

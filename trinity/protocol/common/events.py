@@ -7,6 +7,7 @@ from typing import (
     Type,
 )
 
+from eth_typing import Hash32
 from lahja import (
     BaseEvent,
     BaseRequestResponseEvent,
@@ -41,6 +42,29 @@ class PeerCountRequest(BaseRequestResponseEvent[PeerCountResponse]):
     @staticmethod
     def expected_response_type() -> Type[PeerCountResponse]:
         return PeerCountResponse
+
+
+@dataclass
+class PeerHeadHashResponse(BaseEvent):
+    """
+    Requests peer head hash
+    """
+
+    head_hash: Hash32
+    error: Exception = None
+
+
+@dataclass
+class PeerHeadHashRequest(BaseRequestResponseEvent[PeerHeadHashResponse]):
+    """
+    Returns peer head hash
+    """
+
+    session: SessionAPI
+
+    @staticmethod
+    def expected_response_type() -> Type[PeerHeadHashResponse]:
+        return PeerHeadHashResponse
 
 
 @dataclass

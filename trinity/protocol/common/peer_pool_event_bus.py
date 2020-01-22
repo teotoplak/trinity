@@ -41,9 +41,8 @@ from .events import (
     PeerCountResponse,
     PeerJoinedEvent,
     PeerLeftEvent,
-)
-from .peer import BaseProxyPeer
-
+    PeerHeadHashRequest, PeerHeadHashResponse)
+from .peer import BaseProxyPeer, BaseChainPeer
 
 TPeer = TypeVar('TPeer', bound=BasePeer)
 TEvent = TypeVar('TEvent', bound=BaseEvent)
@@ -88,6 +87,7 @@ class PeerPoolEventServer(BaseService, PeerSubscriber, Generic[TPeer]):
         self.run_daemon_task(self.handle_connect_to_node_requests())
         self.run_daemon_task(self.handle_native_peer_messages())
         self.run_daemon_task(self.handle_get_connected_peers_requests())
+        self.run_daemon_task(self.handle_get_peer_head_hash_requests())
 
         await self.cancellation()
 
@@ -155,6 +155,14 @@ class PeerPoolEventServer(BaseService, PeerSubscriber, Generic[TPeer]):
         async for req in self.wait_iter(self.event_bus.stream(GetConnectedPeersRequest)):
             await self.event_bus.broadcast(
                 GetConnectedPeersResponse(tuple(self.peer_pool.connected_nodes.keys())),
+                req.broadcast_config()
+            )
+
+    async def handle_get_peer_head_hash_requests(self) -> None:
+        async for req in self.wait_iter(self.event_bus.stream(PeerHeadHashRequest)):
+            peer: BaseChainPeer = self.peer_pool.connected_nodes[req.session]
+            await self.event_bus.broadcast(
+                PeerHeadHashResponse(peer.head_info.head_hash),
                 req.broadcast_config()
             )
 
@@ -258,6 +266,15 @@ class BaseProxyPeerPool(BaseService, Generic[TProxyPeer]):
         self.event_bus = event_bus
         self.broadcast_config = broadcast_config
         self.connected_peers: Dict[SessionAPI, TProxyPeer] = dict()
+
+    async def get_existing_or_joining_peer(self, remote_node_id: int, timeout: int):
+        async for peer in self.wait_iter(
+                self.stream_existing_and_joining_peers(),
+                self.cancel_token,
+                timeout):
+            if peer.session.remote.id == remote_node_id:
+                return peer
+        return None
 
     async def stream_existing_and_joining_peers(self) -> AsyncIterator[TProxyPeer]:
         for proxy_peer in await self.get_peers():

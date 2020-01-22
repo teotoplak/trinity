@@ -4,13 +4,14 @@ import pytest
 
 from async_service import background_asyncio_service
 
+from p2p.aurora.util import aurora_head
 from p2p.exceptions import PeerConnectionLost
 
 from trinity.constants import TO_NETWORKING_BROADCAST_CONFIG
 from trinity.db.eth1.chain import AsyncChainDB
 from trinity.protocol.eth.peer import (
     ETHPeerPoolEventServer,
-)
+    ETHProxyPeer)
 from trinity.protocol.eth.servers import ETHRequestServer
 
 from trinity.tools.factories import (
@@ -65,7 +66,7 @@ async def test_proxy_peer_requests(request,
         server_event_bus
     ):
 
-        proxy_peer = await client_proxy_peer_pool.ensure_proxy_peer(client_peer.session)
+        proxy_peer: ETHProxyPeer = await client_proxy_peer_pool.ensure_proxy_peer(client_peer.session)
 
         headers = await proxy_peer.eth_api.get_block_headers(0, 1, 0, False)
 
@@ -85,6 +86,21 @@ async def test_proxy_peer_requests(request,
 
         node_data = await proxy_peer.eth_api.get_node_data((block_header.state_root,))
         assert node_data[0][0] == block_header.state_root
+
+        head_hash = await proxy_peer.eth_api.get_head_hash()
+        assert head_hash is not None
+
+        # todo this doesn't belong here
+        other_head_hash = await aurora_head(proxy_peer.session.remote, event_bus, client_proxy_peer_pool)
+        assert other_head_hash == head_hash
+
+        # disconnecting peers
+        client_proxy_peer_pool.connected_peers = dict()
+        client_peer_pool.connected_nodes = dict()
+        non_existing_head_hash = await aurora_head(proxy_peer.session.remote, event_bus, client_proxy_peer_pool, 1)
+        assert non_existing_head_hash is None
+
+
 
 
 @pytest.mark.asyncio

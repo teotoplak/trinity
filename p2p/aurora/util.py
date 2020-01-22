@@ -1,23 +1,17 @@
 from typing import Dict, List, Set, cast
+import asyncio
 
-import scipy.stats as st
 import numpy
 import math
 import random
 
-from cancel_token import CancelToken
-from eth.abc import BlockHeaderAPI
 from lahja import EndpointAPI
 from scipy import stats as st
 
 from p2p.abc import NodeAPI
-from p2p.cancellable import CancellableMixin
-from tests.core.integration_test_helpers import run_proxy_peer_pool
 from trinity.constants import TO_NETWORKING_BROADCAST_CONFIG
 from trinity.protocol.common.events import ConnectToNodeCommand
-from trinity.protocol.common.peer import BaseProxyPeer
-from trinity.protocol.common.peer_pool_event_bus import BaseProxyPeerPool
-from trinity.protocol.eth.peer import ETHPeer, ETHPeerPoolEventServer, ETHProxyPeer
+from trinity.protocol.eth.peer import ETHProxyPeerPool, ETHProxyPeer
 
 
 def _distance_expectation_matrix_markov(transition_matrix):
@@ -127,27 +121,38 @@ def aurora_pick(candidates: Set[NodeAPI], exclusion_candidates: Set[NodeAPI]) ->
 
 async def aurora_head(node: NodeAPI,
                       event_bus: EndpointAPI,
-                      proxy_peer_pool: BaseProxyPeerPool,
-                      cancel_token: CancelToken):
+                      proxy_peer_pool: ETHProxyPeerPool = None,
+                      timeout: int = 60):
     """ Returns the head hash from a remote node """
-    cancellable_mixin: CancellableMixin = CancellableMixin()
-    timeout = 30
-
-    return node.pubkey
 
     await event_bus.broadcast(
         ConnectToNodeCommand(node),
         TO_NETWORKING_BROADCAST_CONFIG
     )
 
-    proxy_peer: BaseProxyPeer = None
-    async for peer in cancellable_mixin.wait_iter(
-            proxy_peer_pool.stream_existing_and_joining_peers(),
-            cancel_token,
-            timeout):
-        if peer.session.remote.id == node.id:
-            proxy_peer = peer
-            break
+    if proxy_peer_pool is None:
+        proxy_peer_pool: ETHProxyPeerPool = await run_proxy_peer_pool(event_bus)
 
-    # todo implement getting head hash from a proxy peer
-    return node.pubkey
+    try:
+        proxy_peer = await proxy_peer_pool.get_existing_or_joining_peer(node.id, timeout)
+    except asyncio.TimeoutError:
+        # todo log this
+        return None
+
+    return await proxy_peer.eth_api.get_head_hash()
+
+
+async def run_proxy_peer_pool(event_bus) -> ETHProxyPeerPool:
+    proxy_peer_pool = ETHProxyPeerPool(
+        event_bus,
+        TO_NETWORKING_BROADCAST_CONFIG,
+    )
+
+    # todo this doesn't have to be an asyncio.ensure_future?
+    asyncio.ensure_future(proxy_peer_pool.run())
+    await proxy_peer_pool.events.started.wait()
+
+    try:
+        return proxy_peer_pool
+    finally:
+        await proxy_peer_pool.cancel()
