@@ -10,7 +10,9 @@ from p2p import constants
 from p2p.abc import AddressAPI, NodeAPI
 from p2p.aurora.util import calculate_distance, aurora_pick, assumed_malicious_node_number, quantified_mistake, \
     optimize_distance_with_mistake, calculate_correctness_indicator, aurora_put, optimum, aurora_head
+from p2p.constants import KADEMLIA_BUCKET_SIZE
 from p2p.discovery import DiscoveryService
+from trinity.events import ShutdownRequest
 
 
 class AuroraDiscoveryService(DiscoveryService):
@@ -20,10 +22,27 @@ class AuroraDiscoveryService(DiscoveryService):
                  address: AddressAPI,
                  bootstrap_nodes: Sequence[NodeAPI],
                  event_bus: EndpointAPI,
-                 socket: trio.socket.SocketType) -> None:
+                 socket: trio.socket.SocketType,
+                 network_size: int,
+                 mistake_threshold: int,
+                 num_of_walks: int) -> None:
         super().__init__(privkey, address, bootstrap_nodes, event_bus, socket)
+        self.network_size = network_size
+        self.mistake_threshold = mistake_threshold
+        self.num_of_walks = num_of_walks
 
-    async def aurora_walk(self, entry_node: NodeAPI,
+    # todo should not extend this method, it's a quick hack
+    async def lookup_random(self) -> Tuple[NodeAPI, ...]:
+        self.logger.info("Aurora Component lookup started...")
+        entry_node: NodeAPI = self.routing.get_random_nodes(1)
+        await self.aurora_tally(entry_node,
+                                self.mistake_threshold,
+                                self.network_size,
+                                KADEMLIA_BUCKET_SIZE,
+                                self.num_of_walks)
+
+    async def aurora_walk(self,
+                          entry_node: NodeAPI,
                           network_size: int,
                           neighbours_response_size: int,
                           standard_mistakes_threshold: int) -> Tuple[float, any, Set[NodeAPI]]:
@@ -71,14 +90,14 @@ class AuroraDiscoveryService(DiscoveryService):
         head_hash = await aurora_head(current_node_in_walk, None, None, None)
         return correctness_indicator, head_hash, collected_nodes_set
 
-    def aurora_tally(self,
-                     entry_node: NodeAPI,
-                     standard_mistakes_threshold: int,
-                     network_size: int,
-                     neighbours_response_size: int,
-                     num_of_walks: int):
+    async def aurora_tally(self,
+                           entry_node: NodeAPI,
+                           standard_mistakes_threshold: int,
+                           network_size: int,
+                           neighbours_response_size: int,
+                           num_of_walks: int):
         correctness_dict: Dict[any, List[float]] = {}
-        correctness_indicator, pubkey, collected_nodes_set = self.aurora_walk(
+        correctness_indicator, pubkey, collected_nodes_set = await self.aurora_walk(
             entry_node,
             network_size,
             neighbours_response_size,
@@ -86,6 +105,7 @@ class AuroraDiscoveryService(DiscoveryService):
         if correctness_indicator == 0:
             # stuck in clique
             self.logger.warning("Clique detected during p2p discovery!")
+            await self._event_bus.broadcast(ShutdownRequest("Possible malicious network - exiting!"))
             return None
         correctness_dict = aurora_put(correctness_dict,
                                       pubkey,

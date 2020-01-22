@@ -13,6 +13,7 @@ from async_service import Service, TrioManager
 from lahja import EndpointAPI
 
 from p2p.abc import ProtocolAPI
+from p2p.aurora.aurora_dicovery_protocol import AuroraDiscoveryService
 from p2p.constants import (
     DISCOVERY_EVENTBUS_ENDPOINT,
 )
@@ -75,6 +76,11 @@ class PeerDiscoveryComponent(TrioIsolatedComponent):
             action="store_true",
             help="Disable peer discovery",
         )
+        arg_parser.add_argument(
+            "--aurora",
+            nargs='*',
+            help='Aurora discovery'
+        )
 
     @classmethod
     async def do_run(cls, boot_info: BootInfo, event_bus: EndpointAPI) -> None:
@@ -82,7 +88,28 @@ class PeerDiscoveryComponent(TrioIsolatedComponent):
         external_ip = "0.0.0.0"
         address = Address(external_ip, config.port, config.port)
 
-        if boot_info.args.disable_discovery:
+        if boot_info.args.aurora:
+            tx_hash = None
+            aurora_arguments = boot_info.args.aurora
+            if len(aurora_arguments) == 3:
+                network_size, threshold, num_of_walks = aurora_arguments
+            elif len(aurora_arguments) == 4:
+                network_size, threshold, num_of_walks, tx_hash = aurora_arguments
+            else:
+                raise ValueError("Wrong arguments for aurora!")
+            socket = trio.socket.socket(family=trio.socket.AF_INET, type=trio.socket.SOCK_DGRAM)
+            await socket.bind((external_ip, config.port))
+            discovery_service = AuroraDiscoveryService(
+                boot_info.trinity_config.nodekey,
+                address,
+                config.bootstrap_nodes,
+                event_bus,
+                socket,
+                int(network_size),
+                int(threshold),
+                int(num_of_walks)
+            )
+        elif boot_info.args.disable_discovery:
             discovery_service: Service = StaticDiscoveryService(
                 event_bus,
                 config.preferred_nodes,
