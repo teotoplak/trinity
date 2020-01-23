@@ -14,7 +14,7 @@ from cancel_token import CancelToken
 
 from p2p import constants
 from p2p.abc import NodeAPI
-from p2p.aurora.aurora_dicovery_protocol import AuroraDiscoveryService
+from p2p.aurora.aurora_dicovery_protocol import AuroraDiscoveryService, CliqueDetectedError
 from p2p.aurora.util import calculate_distance, aurora_pick
 from p2p.kademlia import Address
 from p2p.tools.factories import (
@@ -25,20 +25,29 @@ from p2p.tools.factories import (
 
 @pytest.mark.trio
 async def test_aurora_tally_clique_detected(manually_driven_discovery):
-    manually_driven_discovery.aurora_walk = lambda *args: (0, "block", set())
-    assert manually_driven_discovery.aurora_tally(NodeFactory(), 10, 50, 16, 3) is None
+    async def aurora_walk_mock(*args):
+        return 0, "block", set()
+    manually_driven_discovery.aurora_walk = aurora_walk_mock
+    with pytest.raises(CliqueDetectedError):
+        await manually_driven_discovery.aurora_tally(NodeFactory(), 10, 50, 16, 3)
 
 
 @pytest.mark.trio
 async def test_aurora_tally(manually_driven_discovery):
     proto = manually_driven_discovery
     m = Mock()
+
+    def make_coroutine(mock):
+        async def coroutine(*args, **kwargs):
+            return mock(*args, **kwargs)
+        return coroutine
+
     m.side_effect = [
         (0.8, "block_a", set(NodeFactory.create_batch(16))),
         (0.9, "block_b", set(NodeFactory.create_batch(16))),
         (0.7, "block_c", set(NodeFactory.create_batch(16))),
     ]
-    proto.aurora_walk = m
+    proto.aurora_walk = make_coroutine(m)
     result_key, _ = await proto.aurora_tally(NodeFactory(), 10, 50, 16, 3)
     assert result_key == "block_b"
     assert m.call_count == 3

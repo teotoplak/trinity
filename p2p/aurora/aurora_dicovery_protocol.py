@@ -17,6 +17,11 @@ from trinity.protocol.common.events import ConnectToNodeCommand
 from trinity.protocol.eth.peer import ETHProxyPeerPool
 
 
+class CliqueDetectedError(Exception):
+    """Possible malicious network"""
+    pass
+
+
 class AuroraDiscoveryService(DiscoveryService):
 
     def __init__(self,
@@ -39,11 +44,15 @@ class AuroraDiscoveryService(DiscoveryService):
     async def lookup_random(self) -> Tuple[NodeAPI, ...]:
         self.logger.info("Aurora Component lookup started...")
         entry_node: NodeAPI = self.routing.get_random_nodes(1)
-        await self.aurora_tally(entry_node,
-                                self.mistake_threshold,
-                                self.network_size,
-                                KADEMLIA_BUCKET_SIZE,
-                                self.num_of_walks)
+        try:
+            await self.aurora_tally(entry_node,
+                                    self.mistake_threshold,
+                                    self.network_size,
+                                    KADEMLIA_BUCKET_SIZE,
+                                    self.num_of_walks)
+        except CliqueDetectedError:
+            self.logger.warning("Clique detected during p2p discovery!")
+            await self._event_bus.broadcast(ShutdownRequest("Possible malicious network - exiting!"))
 
     async def aurora_walk(self,
                           entry_node: NodeAPI,
@@ -115,7 +124,7 @@ class AuroraDiscoveryService(DiscoveryService):
         current_node = entry_node
         while iteration < num_of_walks:
             try:
-                correctness_indicator, pubkey, collected_nodes_set = self.aurora_walk(
+                correctness_indicator, pubkey, collected_nodes_set = await self.aurora_walk(
                     current_node,
                     network_size,
                     neighbours_response_size,
@@ -125,9 +134,7 @@ class AuroraDiscoveryService(DiscoveryService):
                 continue
             if correctness_indicator == 0:
                 # stuck in clique
-                self.logger.warning("Clique detected during p2p discovery!")
-                await self._event_bus.broadcast(ShutdownRequest("Possible malicious network - exiting!"))
-                return None
+                raise CliqueDetectedError
 
             correctness_dict = aurora_put(correctness_dict,
                                           pubkey,
