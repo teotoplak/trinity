@@ -25,10 +25,10 @@ class AuroraDiscoveryService(DiscoveryService):
                  bootstrap_nodes: Sequence[NodeAPI],
                  event_bus: EndpointAPI,
                  socket: trio.socket.SocketType,
-                 proxy_peer_pool: ETHProxyPeerPool,
-                 network_size: int,
-                 mistake_threshold: int,
-                 num_of_walks: int) -> None:
+                 proxy_peer_pool: ETHProxyPeerPool = None,
+                 network_size: int = 2000,
+                 mistake_threshold: int = 50,
+                 num_of_walks: int = 1) -> None:
         super().__init__(privkey, address, bootstrap_nodes, event_bus, socket)
         self.network_size = network_size
         self.mistake_threshold = mistake_threshold
@@ -69,6 +69,7 @@ class AuroraDiscoveryService(DiscoveryService):
             candidates = await self.wait_neighbours(current_node_in_walk)
 
             last_neighbours_response_size = len(candidates)
+            collected_nodes_set.update(candidates)
             num_of_collected_total = len(collected_nodes_set)
             # todo what about the known ones but not available? this should consider it
             num_of_already_known_peers = len(collected_nodes_set & set(candidates))
@@ -79,7 +80,6 @@ class AuroraDiscoveryService(DiscoveryService):
             accumulated_mistake += mistake
             distance = optimize_distance_with_mistake(distance, mistake)
             current_node_in_walk = aurora_pick(set(candidates), collected_nodes_set)
-            collected_nodes_set.update(candidates)
             if network_size == len(collected_nodes_set):
                 break
             iteration += 1

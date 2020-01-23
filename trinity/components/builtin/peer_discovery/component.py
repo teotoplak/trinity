@@ -13,8 +13,9 @@ from async_service import Service, TrioManager
 from lahja import EndpointAPI
 
 from p2p.abc import ProtocolAPI
-from p2p.aurora.aurora_dicovery_protocol import AuroraDiscoveryService
-from p2p.aurora.util import run_proxy_peer_pool
+# for some reason tests are failing if not using asterisk
+from p2p.aurora.aurora_dicovery_protocol import *
+from p2p.aurora.util import *
 from p2p.constants import (
     DISCOVERY_EVENTBUS_ENDPOINT,
 )

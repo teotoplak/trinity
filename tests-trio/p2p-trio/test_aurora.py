@@ -39,7 +39,7 @@ async def test_aurora_tally(manually_driven_discovery):
         (0.7, "block_c", set(NodeFactory.create_batch(16))),
     ]
     proto.aurora_walk = m
-    result_key, _ = proto.aurora_tally(NodeFactory(), 10, 50, 16, 3)
+    result_key, _ = await proto.aurora_tally(NodeFactory(), 10, 50, 16, 3)
     assert result_key == "block_b"
     assert m.call_count == 3
 
@@ -75,7 +75,7 @@ async def random_socket():
 
 
 @pytest.mark.parametrize("network_size, malpn, malpg, mistake_threshold, should_exit_clique", [
-    (100, 0.125, 0.4, 50, False),  # finding honest node to sync
+    (100, 0.2, 0.1, 50, False),  # finding honest node to sync
     (100, 0.125, 1, 50, True),  # eclipse attack
     (100, 0.4, 0.7, 50, True),  # almost full eclipse attack
     (100, 0, 0.1, 50, False),  # all honest nodes
@@ -101,13 +101,21 @@ async def test_aurora_walk(network_size, malpn, malpg, mistake_threshold, should
             pubkey_honesty.update({node.pubkey: True})
             honest_nodes.add(node)
     socket = await random_socket()
-    proto = MockDiscoveryProtocolAurora(batch, honest_nodes, malicious_nodes, malpg, socket)
+    proto = MockDiscoveryProtocolAurora(batch, honest_nodes,
+                                        malicious_nodes, malpg, socket, None, network_size, mistake_threshold, 1)
+
+    async def aurora_head_mock(node, x, c, v):
+        return node.pubkey
+
+    proto.aurora_head = aurora_head_mock
 
     entry_node = random.choice(tuple(malicious_nodes if malpn != 0 else honest_nodes))
-    correctness_indicator, result_pubkey, _ = await proto.aurora_walk(entry_node, network_size, response_size, mistake_threshold)
+    correctness_indicator, result_pubkey, _ = await proto.aurora_walk(entry_node,
+                                                                      network_size, response_size, mistake_threshold)
     if should_exit_clique:
         assert correctness_indicator == 0
     else:
+        assert result_pubkey in pubkey_honesty
         assert pubkey_honesty[result_pubkey]
 
 
@@ -144,13 +152,23 @@ def link_transport_to_multiple(our_protocol, protocols):
 
 
 class MockDiscoveryProtocolAurora(AuroraDiscoveryService):
-    def __init__(self, bootstrap_nodes, honest_nodes: Set[NodeAPI], malicious_nodes: Set[NodeAPI], malpg, socket):
+    def __init__(self,
+                 bootstrap_nodes,
+                 honest_nodes: Set[NodeAPI],
+                 malicious_nodes: Set[NodeAPI],
+                 malpg,
+                 socket,
+                 proxy_peer_pool,
+                 network_size,
+                 mistake_threshold,
+                 num_of_walks):
         privkey = keys.PrivateKey(keccak(b"seed"))
         self.messages = []
         self.honest_nodes = honest_nodes
         self.malicious_nodes = malicious_nodes
         self.malpg = malpg
-        super().__init__(privkey, Address(*socket.getsockname()), bootstrap_nodes, None, socket)
+        super().__init__(privkey, Address(*socket.getsockname()),
+                         bootstrap_nodes, None, socket, proxy_peer_pool, network_size, mistake_threshold, num_of_walks)
 
     def _send_find_node(self, node: NodeAPI, target_node_id: int) -> None:
         return None
