@@ -1,5 +1,4 @@
 from typing import Dict, List, Set, cast
-import asyncio
 
 import numpy
 import math
@@ -119,37 +118,14 @@ def aurora_pick(candidates: Set[NodeAPI], exclusion_candidates: Set[NodeAPI]) ->
     return random.sample(set_to_choose_from, 1)[0]
 
 
-async def aurora_head(node: NodeAPI,
-                      event_bus: EndpointAPI,
-                      proxy_peer_pool: ETHProxyPeerPool = None,
-                      timeout: int = 60):
-    """ Returns the head hash from a remote node """
-
-    await event_bus.broadcast(
-        ConnectToNodeCommand(node),
-        TO_NETWORKING_BROADCAST_CONFIG
-    )
-
-    if proxy_peer_pool is None:
-        proxy_peer_pool: ETHProxyPeerPool = await run_proxy_peer_pool(event_bus)
-
-    try:
-        proxy_peer = await proxy_peer_pool.get_existing_or_joining_peer(node.id, timeout)
-    except asyncio.TimeoutError:
-        # todo log this
-        return None
-
-    return await proxy_peer.eth_api.get_head_hash()
-
-
-async def run_proxy_peer_pool(event_bus) -> ETHProxyPeerPool:
+async def run_proxy_peer_pool(event_bus: EndpointAPI) -> ETHProxyPeerPool:
     proxy_peer_pool = ETHProxyPeerPool(
         event_bus,
         TO_NETWORKING_BROADCAST_CONFIG,
     )
 
     # todo this doesn't have to be an asyncio.ensure_future?
-    asyncio.ensure_future(proxy_peer_pool.run())
+    await proxy_peer_pool.run()
     await proxy_peer_pool.events.started.wait()
 
     try:

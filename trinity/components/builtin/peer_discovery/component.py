@@ -14,6 +14,7 @@ from lahja import EndpointAPI
 
 from p2p.abc import ProtocolAPI
 from p2p.aurora.aurora_dicovery_protocol import AuroraDiscoveryService
+from p2p.aurora.util import run_proxy_peer_pool
 from p2p.constants import (
     DISCOVERY_EVENTBUS_ENDPOINT,
 )
@@ -99,12 +100,14 @@ class PeerDiscoveryComponent(TrioIsolatedComponent):
                 raise ValueError("Wrong arguments for aurora!")
             socket = trio.socket.socket(family=trio.socket.AF_INET, type=trio.socket.SOCK_DGRAM)
             await socket.bind((external_ip, config.port))
+            proxy_peer_pool = await run_proxy_peer_pool(event_bus)
             discovery_service = AuroraDiscoveryService(
                 boot_info.trinity_config.nodekey,
                 address,
                 config.bootstrap_nodes,
                 event_bus,
                 socket,
+                proxy_peer_pool,
                 int(network_size),
                 int(threshold),
                 int(num_of_walks)

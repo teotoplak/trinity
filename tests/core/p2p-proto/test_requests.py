@@ -4,7 +4,7 @@ import pytest
 
 from async_service import background_asyncio_service
 
-from p2p.aurora.util import aurora_head
+from p2p.aurora.aurora_dicovery_protocol import AuroraDiscoveryService
 from p2p.exceptions import PeerConnectionLost
 
 from trinity.constants import TO_NETWORKING_BROADCAST_CONFIG
@@ -91,16 +91,20 @@ async def test_proxy_peer_requests(request,
         assert head_hash is not None
 
         # todo this doesn't belong here
-        other_head_hash = await aurora_head(proxy_peer.session.remote, event_bus, client_proxy_peer_pool)
+        other_head_hash = await AuroraDiscoveryService.aurora_head(proxy_peer.session.remote,
+                                                                   event_bus,
+                                                                   client_proxy_peer_pool,
+                                                                   1)
         assert other_head_hash == head_hash
 
         # disconnecting peers
         client_proxy_peer_pool.connected_peers = dict()
         client_peer_pool.connected_nodes = dict()
-        non_existing_head_hash = await aurora_head(proxy_peer.session.remote, event_bus, client_proxy_peer_pool, 1)
-        assert non_existing_head_hash is None
-
-
+        with pytest.raises(TimeoutError):
+            await AuroraDiscoveryService.aurora_head(proxy_peer.session.remote,
+                                                     event_bus,
+                                                     client_proxy_peer_pool,
+                                                     1)
 
 
 @pytest.mark.asyncio

@@ -1,3 +1,4 @@
+import asyncio
 from abc import (
     abstractmethod,
 )
@@ -268,13 +269,16 @@ class BaseProxyPeerPool(BaseService, Generic[TProxyPeer]):
         self.connected_peers: Dict[SessionAPI, TProxyPeer] = dict()
 
     async def get_existing_or_joining_peer(self, remote_node_id: int, timeout: int):
-        async for peer in self.wait_iter(
-                self.stream_existing_and_joining_peers(),
-                self.cancel_token,
-                timeout):
-            if peer.session.remote.id == remote_node_id:
-                return peer
-        return None
+        try:
+            async for peer in self.wait_iter(
+                    self.stream_existing_and_joining_peers(),
+                    self.cancel_token,
+                    timeout):
+                if peer.session.remote.id == remote_node_id:
+                    return peer
+            return None
+        except asyncio.TimeoutError:
+            raise TimeoutError
 
     async def stream_existing_and_joining_peers(self) -> AsyncIterator[TProxyPeer]:
         for proxy_peer in await self.get_peers():

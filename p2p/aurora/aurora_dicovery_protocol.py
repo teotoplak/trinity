@@ -2,17 +2,19 @@ import random
 from typing import Sequence, Set, Tuple, Dict, List
 
 import trio
-from cancel_token import CancelToken
 from eth_keys import datatypes
 from lahja import EndpointAPI
 
 from p2p import constants
 from p2p.abc import AddressAPI, NodeAPI
 from p2p.aurora.util import calculate_distance, aurora_pick, assumed_malicious_node_number, quantified_mistake, \
-    optimize_distance_with_mistake, calculate_correctness_indicator, aurora_put, optimum, aurora_head
+    optimize_distance_with_mistake, calculate_correctness_indicator, aurora_put, optimum
 from p2p.constants import KADEMLIA_BUCKET_SIZE
 from p2p.discovery import DiscoveryService
+from trinity.constants import TO_NETWORKING_BROADCAST_CONFIG
 from trinity.events import ShutdownRequest
+from trinity.protocol.common.events import ConnectToNodeCommand
+from trinity.protocol.eth.peer import ETHProxyPeerPool
 
 
 class AuroraDiscoveryService(DiscoveryService):
@@ -23,6 +25,7 @@ class AuroraDiscoveryService(DiscoveryService):
                  bootstrap_nodes: Sequence[NodeAPI],
                  event_bus: EndpointAPI,
                  socket: trio.socket.SocketType,
+                 proxy_peer_pool: ETHProxyPeerPool,
                  network_size: int,
                  mistake_threshold: int,
                  num_of_walks: int) -> None:
@@ -30,6 +33,7 @@ class AuroraDiscoveryService(DiscoveryService):
         self.network_size = network_size
         self.mistake_threshold = mistake_threshold
         self.num_of_walks = num_of_walks
+        self.proxy_peer_pool = proxy_peer_pool
 
     # todo should not extend this method, it's a quick hack
     async def lookup_random(self) -> Tuple[NodeAPI, ...]:
@@ -79,15 +83,25 @@ class AuroraDiscoveryService(DiscoveryService):
             if network_size == len(collected_nodes_set):
                 break
             iteration += 1
+
             self.logger.debug2(f"iter: {iteration} | distance: {distance:.2f} | "
                                f"{num_of_already_known_peers}/{last_neighbours_response_size} known peers | "
                                f"total_mistake: {accumulated_mistake:.2f} (+{mistake:.2f})")
+
             if accumulated_mistake >= standard_mistakes_threshold:
                 self.logger.debug2("Aurora is assuming malicious a activity: exiting the network!")
                 return 0, None, collected_nodes_set
+
         correctness_indicator = calculate_correctness_indicator(accumulated_mistake, standard_mistakes_threshold)
-        # todo return chain head instead of key later on
-        head_hash = await aurora_head(current_node_in_walk, None, None, None)
+        try:
+            head_hash = await self.aurora_head(current_node_in_walk,
+                                               self._event_bus,
+                                               self.proxy_peer_pool,
+                                               60)
+        except TimeoutError:
+            self.logger.warning(f"Could not connect to a peer {current_node_in_walk.pubkey} over proxy pool - timeout")
+            raise ConnectionRefusedError
+
         return correctness_indicator, head_hash, collected_nodes_set
 
     async def aurora_tally(self,
@@ -97,31 +111,46 @@ class AuroraDiscoveryService(DiscoveryService):
                            neighbours_response_size: int,
                            num_of_walks: int):
         correctness_dict: Dict[any, List[float]] = {}
-        correctness_indicator, pubkey, collected_nodes_set = await self.aurora_walk(
-            entry_node,
-            network_size,
-            neighbours_response_size,
-            standard_mistakes_threshold)
-        if correctness_indicator == 0:
-            # stuck in clique
-            self.logger.warning("Clique detected during p2p discovery!")
-            await self._event_bus.broadcast(ShutdownRequest("Possible malicious network - exiting!"))
-            return None
-        correctness_dict = aurora_put(correctness_dict,
-                                      pubkey,
-                                      correctness_indicator)
-        # starting from 1 since we already made one walk
-        for _ in range(1, num_of_walks):
-            current_node = aurora_pick(collected_nodes_set, set())
-            correctness_indicator, pubkey, collected_nodes_set = self.aurora_walk(
-                current_node,
-                network_size,
-                neighbours_response_size,
-                standard_mistakes_threshold)
+        iteration = 0
+        current_node = entry_node
+        while iteration < num_of_walks:
+            try:
+                correctness_indicator, pubkey, collected_nodes_set = self.aurora_walk(
+                    current_node,
+                    network_size,
+                    neighbours_response_size,
+                    standard_mistakes_threshold)
+            except ConnectionRefusedError:
+                self.logger.warning(f"Executing additional Aurora walk")
+                continue
+            if correctness_indicator == 0:
+                # stuck in clique
+                self.logger.warning("Clique detected during p2p discovery!")
+                await self._event_bus.broadcast(ShutdownRequest("Possible malicious network - exiting!"))
+                return None
+
             correctness_dict = aurora_put(correctness_dict,
                                           pubkey,
                                           correctness_indicator)
+            current_node = aurora_pick(collected_nodes_set, set())
+            iteration += 1
         return optimum(correctness_dict)
+
+    @staticmethod
+    async def aurora_head(node: NodeAPI,
+                          event_bus: EndpointAPI,
+                          proxy_peer_pool: ETHProxyPeerPool,
+                          timeout: int = 60):
+        """ Returns the head hash from a remote node
+
+        Raises TimeoutError if proxy peer couldn't fetch the peer in provided time period
+        """
+        await event_bus.broadcast(
+            ConnectToNodeCommand(node),
+            TO_NETWORKING_BROADCAST_CONFIG
+        )
+        proxy_peer = await proxy_peer_pool.get_existing_or_joining_peer(node.id, timeout)
+        return await proxy_peer.eth_api.get_head_hash()
 
     @staticmethod
     def random_kademlia_node_id() -> int:
